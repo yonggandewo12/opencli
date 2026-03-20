@@ -223,6 +223,132 @@ export interface DiscoveredStore {
 
 const INTERACT_FUZZ_JS = interactFuzz.toString();
 
+// ── Analysis helpers (extracted from exploreUrl) ───────────────────────────
+
+/** Filter, deduplicate, and score network endpoints. */
+function analyzeEndpoints(networkEntries: NetworkEntry[]): { analyzed: AnalyzedEndpoint[]; totalCount: number } {
+  const seen = new Map<string, AnalyzedEndpoint>();
+  for (const entry of networkEntries) {
+    if (!entry.url) continue;
+    const ct = entry.contentType.toLowerCase();
+    if (ct.includes('image/') || ct.includes('font/') || ct.includes('css') || ct.includes('javascript') || ct.includes('wasm')) continue;
+    if (entry.status && entry.status >= 400) continue;
+
+    const pattern = urlToPattern(entry.url);
+    const key = `${entry.method}:${pattern}`;
+    if (seen.has(key)) continue;
+
+    const qp: string[] = [];
+    try { new URL(entry.url).searchParams.forEach((_v, k) => { if (!VOLATILE_PARAMS.has(k)) qp.push(k); }); } catch {}
+
+    const ep: AnalyzedEndpoint = {
+      pattern, method: entry.method, url: entry.url, status: entry.status, contentType: ct,
+      queryParams: qp, hasSearchParam: qp.some(p => SEARCH_PARAMS.has(p)),
+      hasPaginationParam: qp.some(p => PAGINATION_PARAMS.has(p)),
+      hasLimitParam: qp.some(p => LIMIT_PARAMS.has(p)),
+      authIndicators: detectAuthIndicators(entry.requestHeaders),
+      responseAnalysis: entry.responseBody ? analyzeResponseBody(entry.responseBody) : null,
+      score: 0,
+    };
+    ep.score = scoreEndpoint(ep);
+    seen.set(key, ep);
+  }
+
+  const analyzed = [...seen.values()].filter(ep => ep.score >= 5).sort((a, b) => b.score - a.score);
+  return { analyzed, totalCount: seen.size };
+}
+
+/** Infer CLI capabilities from analyzed endpoints. */
+function inferCapabilitiesFromEndpoints(
+  endpoints: AnalyzedEndpoint[],
+  stores: DiscoveredStore[],
+  opts: { site?: string; goal?: string; url: string },
+): { capabilities: InferredCapability[]; topStrategy: string; authIndicators: string[] } {
+  const capabilities: InferredCapability[] = [];
+  const usedNames = new Set<string>();
+
+  for (const ep of endpoints.slice(0, 8)) {
+    let capName = inferCapabilityName(ep.url, opts.goal);
+    if (usedNames.has(capName)) {
+      const suffix = ep.pattern.split('/').filter(s => s && !s.startsWith('{') && !s.includes('.')).pop();
+      capName = suffix ? `${capName}_${suffix}` : `${capName}_${usedNames.size}`;
+    }
+    usedNames.add(capName);
+
+    const cols: string[] = [];
+    if (ep.responseAnalysis) {
+      for (const role of ['title', 'url', 'author', 'score', 'time']) {
+        if (ep.responseAnalysis.detectedFields[role]) cols.push(role);
+      }
+    }
+
+    const args: InferredCapability['recommendedArgs'] = [];
+    if (ep.hasSearchParam) args.push({ name: 'keyword', type: 'str', required: true });
+    args.push({ name: 'limit', type: 'int', required: false, default: 20 });
+    if (ep.hasPaginationParam) args.push({ name: 'page', type: 'int', required: false, default: 1 });
+
+    const epStrategy = inferStrategy(ep.authIndicators);
+    let storeHint: { store: string; action: string } | undefined;
+    if ((epStrategy === 'intercept' || ep.authIndicators.includes('signature')) && stores.length > 0) {
+      for (const s of stores) {
+        const matchingAction = s.actions.find(a =>
+          capName.split('_').some(part => a.toLowerCase().includes(part)) ||
+          a.toLowerCase().includes('fetch') || a.toLowerCase().includes('get')
+        );
+        if (matchingAction) { storeHint = { store: s.id, action: matchingAction }; break; }
+      }
+    }
+
+    capabilities.push({
+      name: capName, description: `${opts.site ?? detectSiteName(opts.url)} ${capName}`,
+      strategy: storeHint ? 'store-action' : epStrategy,
+      confidence: Math.min(ep.score / 20, 1.0), endpoint: ep.pattern,
+      itemPath: ep.responseAnalysis?.itemPath ?? null,
+      recommendedColumns: cols.length ? cols : ['title', 'url'],
+      recommendedArgs: args,
+      ...(storeHint ? { storeHint } : {}),
+    });
+  }
+
+  const allAuth = new Set(endpoints.flatMap(ep => ep.authIndicators));
+  const topStrategy = allAuth.has('signature') ? 'intercept'
+    : allAuth.has('bearer') || allAuth.has('csrf') ? 'header'
+    : allAuth.size === 0 ? 'public' : 'cookie';
+
+  return { capabilities, topStrategy, authIndicators: [...allAuth] };
+}
+
+/** Write explore artifacts (manifest, endpoints, capabilities, auth, stores) to disk. */
+async function writeExploreArtifacts(
+  targetDir: string,
+  result: Record<string, any>,
+  analyzedEndpoints: AnalyzedEndpoint[],
+  stores: DiscoveredStore[],
+): Promise<void> {
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  const tasks = [
+    fs.promises.writeFile(path.join(targetDir, 'manifest.json'), JSON.stringify({
+      site: result.site, target_url: result.target_url, final_url: result.final_url, title: result.title,
+      framework: result.framework, stores: stores.map(s => ({ type: s.type, id: s.id, actions: s.actions })),
+      top_strategy: result.top_strategy, explored_at: new Date().toISOString(),
+    }, null, 2)),
+    fs.promises.writeFile(path.join(targetDir, 'endpoints.json'), JSON.stringify(analyzedEndpoints.map(ep => ({
+      pattern: ep.pattern, method: ep.method, url: ep.url, status: ep.status,
+      contentType: ep.contentType, score: ep.score, queryParams: ep.queryParams,
+      itemPath: ep.responseAnalysis?.itemPath ?? null, itemCount: ep.responseAnalysis?.itemCount ?? 0,
+      detectedFields: ep.responseAnalysis?.detectedFields ?? {}, authIndicators: ep.authIndicators,
+    })), null, 2)),
+    fs.promises.writeFile(path.join(targetDir, 'capabilities.json'), JSON.stringify(result.capabilities, null, 2)),
+    fs.promises.writeFile(path.join(targetDir, 'auth.json'), JSON.stringify({
+      top_strategy: result.top_strategy, indicators: result.auth_indicators, framework: result.framework,
+    }, null, 2)),
+  ];
+  if (stores.length > 0) {
+    tasks.push(fs.promises.writeFile(path.join(targetDir, 'stores.json'), JSON.stringify(stores, null, 2)));
+  }
+  await Promise.all(tasks);
+}
+
 // ── Main explore function ──────────────────────────────────────────────────
 
 export async function exploreUrl(
@@ -317,125 +443,25 @@ export async function exploreUrl(
         } catch {}
       }
 
-      // Step 7: Analyze endpoints
-      const seen = new Map<string, AnalyzedEndpoint>();
-      for (const entry of networkEntries) {
-        if (!entry.url) continue;
-        const ct = entry.contentType.toLowerCase();
-        if (ct.includes('image/') || ct.includes('font/') || ct.includes('css') || ct.includes('javascript') || ct.includes('wasm')) continue;
-        if (entry.status && entry.status >= 400) continue;
+      // Step 7+8: Analyze endpoints and infer capabilities
+      const { analyzed: analyzedEndpoints, totalCount } = analyzeEndpoints(networkEntries);
+      const { capabilities, topStrategy, authIndicators } = inferCapabilitiesFromEndpoints(
+        analyzedEndpoints, stores, { site: opts.site, goal: opts.goal, url },
+      );
 
-        const pattern = urlToPattern(entry.url);
-        const key = `${entry.method}:${pattern}`;
-        if (seen.has(key)) continue;
-
-        const qp: string[] = [];
-        try { new URL(entry.url).searchParams.forEach((_v, k) => { if (!VOLATILE_PARAMS.has(k)) qp.push(k); }); } catch {}
-
-        const ep: AnalyzedEndpoint = {
-          pattern, method: entry.method, url: entry.url, status: entry.status, contentType: ct,
-          queryParams: qp, hasSearchParam: qp.some(p => SEARCH_PARAMS.has(p)),
-          hasPaginationParam: qp.some(p => PAGINATION_PARAMS.has(p)),
-          hasLimitParam: qp.some(p => LIMIT_PARAMS.has(p)),
-          authIndicators: detectAuthIndicators(entry.requestHeaders),
-          responseAnalysis: entry.responseBody ? analyzeResponseBody(entry.responseBody) : null,
-          score: 0,
-        };
-        ep.score = scoreEndpoint(ep);
-        seen.set(key, ep);
-      }
-
-      const analyzedEndpoints = [...seen.values()].filter(ep => ep.score >= 5).sort((a, b) => b.score - a.score);
-
-      // Step 8: Infer capabilities
-      const capabilities: InferredCapability[] = [];
-      const usedNames = new Set<string>();
-      for (const ep of analyzedEndpoints.slice(0, 8)) {
-        let capName = inferCapabilityName(ep.url, opts.goal);
-        if (usedNames.has(capName)) {
-          const suffix = ep.pattern.split('/').filter(s => s && !s.startsWith('{') && !s.includes('.')).pop();
-          capName = suffix ? `${capName}_${suffix}` : `${capName}_${usedNames.size}`;
-        }
-        usedNames.add(capName);
-
-        const cols: string[] = [];
-        if (ep.responseAnalysis) {
-          for (const role of ['title', 'url', 'author', 'score', 'time']) {
-            if (ep.responseAnalysis.detectedFields[role]) cols.push(role);
-          }
-        }
-
-        const args: InferredCapability['recommendedArgs'] = [];
-        if (ep.hasSearchParam) args.push({ name: 'keyword', type: 'str', required: true });
-        args.push({ name: 'limit', type: 'int', required: false, default: 20 });
-        if (ep.hasPaginationParam) args.push({ name: 'page', type: 'int', required: false, default: 1 });
-
-        // Link store actions to capabilities when store-action strategy is recommended
-        const epStrategy = inferStrategy(ep.authIndicators);
-        let storeHint: { store: string; action: string } | undefined;
-        if ((epStrategy === 'intercept' || ep.authIndicators.includes('signature')) && stores.length > 0) {
-          // Try to find a store/action that matches this endpoint's purpose
-          for (const s of stores) {
-            const matchingAction = s.actions.find(a =>
-              capName.split('_').some(part => a.toLowerCase().includes(part)) ||
-              a.toLowerCase().includes('fetch') || a.toLowerCase().includes('get')
-            );
-            if (matchingAction) {
-              storeHint = { store: s.id, action: matchingAction };
-              break;
-            }
-          }
-        }
-
-        capabilities.push({
-          name: capName, description: `${opts.site ?? detectSiteName(url)} ${capName}`,
-          strategy: storeHint ? 'store-action' : epStrategy,
-          confidence: Math.min(ep.score / 20, 1.0), endpoint: ep.pattern,
-          itemPath: ep.responseAnalysis?.itemPath ?? null,
-          recommendedColumns: cols.length ? cols : ['title', 'url'],
-          recommendedArgs: args,
-          ...(storeHint ? { storeHint } : {}),
-        });
-      }
-
-      // Step 9: Determine overall auth strategy
-      const allAuth = new Set(analyzedEndpoints.flatMap(ep => ep.authIndicators));
-      const topStrategy = allAuth.has('signature') ? 'intercept' : allAuth.has('bearer') || allAuth.has('csrf') ? 'header' : allAuth.size === 0 ? 'public' : 'cookie';
-
+      // Step 9: Assemble result and write artifacts
       const siteName = opts.site ?? detectSiteName(metadata.url || url);
       const targetDir = opts.outDir ?? path.join('.opencli', 'explore', siteName);
-      await fs.promises.mkdir(targetDir, { recursive: true });
 
       const result = {
         site: siteName, target_url: url, final_url: metadata.url, title: metadata.title,
         framework, stores, top_strategy: topStrategy,
-        endpoint_count: analyzedEndpoints.length + [...seen.values()].filter(ep => ep.score < 5).length,
+        endpoint_count: totalCount,
         api_endpoint_count: analyzedEndpoints.length,
-        capabilities, auth_indicators: [...allAuth],
+        capabilities, auth_indicators: authIndicators,
       };
 
-      // Write artifacts
-      const writeTasks = [];
-      writeTasks.push(fs.promises.writeFile(path.join(targetDir, 'manifest.json'), JSON.stringify({
-        site: siteName, target_url: url, final_url: metadata.url, title: metadata.title,
-        framework, stores: stores.map(s => ({ type: s.type, id: s.id, actions: s.actions })),
-        top_strategy: topStrategy, explored_at: new Date().toISOString(),
-      }, null, 2)));
-      writeTasks.push(fs.promises.writeFile(path.join(targetDir, 'endpoints.json'), JSON.stringify(analyzedEndpoints.map(ep => ({
-        pattern: ep.pattern, method: ep.method, url: ep.url, status: ep.status,
-        contentType: ep.contentType, score: ep.score, queryParams: ep.queryParams,
-        itemPath: ep.responseAnalysis?.itemPath ?? null, itemCount: ep.responseAnalysis?.itemCount ?? 0,
-        detectedFields: ep.responseAnalysis?.detectedFields ?? {}, authIndicators: ep.authIndicators,
-      })), null, 2)));
-      writeTasks.push(fs.promises.writeFile(path.join(targetDir, 'capabilities.json'), JSON.stringify(capabilities, null, 2)));
-      writeTasks.push(fs.promises.writeFile(path.join(targetDir, 'auth.json'), JSON.stringify({
-        top_strategy: topStrategy, indicators: [...allAuth], framework,
-      }, null, 2)));
-      if (stores.length > 0) {
-        writeTasks.push(fs.promises.writeFile(path.join(targetDir, 'stores.json'), JSON.stringify(stores, null, 2)));
-      }
-      await Promise.all(writeTasks);
-
+      await writeExploreArtifacts(targetDir, result, analyzedEndpoints, stores);
       return { ...result, out_dir: targetDir };
     })(), { timeout: exploreTimeout, label: `Explore ${url}` });
   }, { workspace: opts.workspace });

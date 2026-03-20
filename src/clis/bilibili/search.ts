@@ -1,5 +1,5 @@
 import { cli, Strategy } from '../../registry.js';
-import { apiGet, stripHtml } from '../../bilibili.js';
+import { apiGet, stripHtml } from './utils.js';
 
 cli({
   site: 'bilibili', name: 'search', description: 'Search Bilibili videos or users', domain: 'www.bilibili.com', strategy: Strategy.COOKIE,

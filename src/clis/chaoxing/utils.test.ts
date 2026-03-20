@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatTimestamp, workStatusLabel } from './chaoxing.js';
+import { formatTimestamp, workStatusLabel } from './utils.js';
 
 function localDatePrefixFromMillis(ts: number): string {
   const d = new Date(ts);

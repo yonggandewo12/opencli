@@ -1,5 +1,5 @@
 import { cli, Strategy } from '../../registry.js';
-import { apiGet, payloadData } from '../../bilibili.js';
+import { apiGet, payloadData } from './utils.js';
 
 cli({
   site: 'bilibili',

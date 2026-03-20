@@ -1,5 +1,5 @@
 import { cli, Strategy } from '../../registry.js';
-import { canonicalizeProductUrl, normalizeProductId } from '../../coupang.js';
+import { canonicalizeProductUrl, normalizeProductId } from './utils.js';
 
 function escapeJsString(value: string): string {
   return JSON.stringify(value);

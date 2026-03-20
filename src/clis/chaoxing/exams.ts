@@ -3,7 +3,7 @@ import {
   getCourses, initSession, enterCourse, getTabIframeUrl,
   parseExamsFromDom, sleep,
   type ExamRow,
-} from '../../chaoxing.js';
+} from './utils.js';
 
 cli({
   site: 'chaoxing',

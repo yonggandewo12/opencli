@@ -5,7 +5,7 @@ import {
   normalizeProductId,
   normalizeSearchItem,
   sanitizeSearchItems,
-} from './coupang.js';
+} from './utils.js';
 
 describe('normalizeProductId', () => {
   it('extracts product id from canonical path', () => {

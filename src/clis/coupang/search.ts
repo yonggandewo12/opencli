@@ -1,5 +1,5 @@
 import { cli, Strategy } from '../../registry.js';
-import { mergeSearchItems, normalizeSearchItem, sanitizeSearchItems } from '../../coupang.js';
+import { mergeSearchItems, normalizeSearchItem, sanitizeSearchItems } from './utils.js';
 
 function escapeJsString(value: string): string {
   return JSON.stringify(value);

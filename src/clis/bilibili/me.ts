@@ -1,5 +1,5 @@
 import { cli, Strategy } from '../../registry.js';
-import { apiGet, getSelfUid } from '../../bilibili.js';
+import { apiGet, getSelfUid } from './utils.js';
 
 cli({
   site: 'bilibili', name: 'me', description: 'My Bilibili profile info', domain: 'www.bilibili.com', strategy: Strategy.COOKIE,

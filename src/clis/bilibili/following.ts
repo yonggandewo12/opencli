@@ -1,6 +1,6 @@
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { fetchJson, getSelfUid, resolveUid } from '../../bilibili.js';
+import { fetchJson, getSelfUid, resolveUid } from './utils.js';
 
 cli({
   site: 'bilibili',
