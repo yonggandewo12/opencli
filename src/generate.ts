@@ -102,9 +102,10 @@ function selectCandidate(candidates: SynthesizeResult['candidates'], goal?: stri
   }
 
   const lower = (goal ?? '').trim().toLowerCase();
-  const partial = candidates.find(c =>
-    c.name?.toLowerCase().includes(lower) || lower.includes(c.name?.toLowerCase())
-  );
+  const partial = candidates.find(c => {
+    const cName = c.name?.toLowerCase() ?? '';
+    return cName.includes(lower) || lower.includes(cName);
+  });
   return partial ?? candidates[0];
 }
 

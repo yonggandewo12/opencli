@@ -51,6 +51,8 @@ export class CDPBridge {
   private _eventListeners = new Map<string, Set<(params: unknown) => void>>();
 
   async connect(opts?: { timeout?: number; workspace?: string }): Promise<IPage> {
+    if (this._ws) throw new Error('CDPBridge is already connected. Call close() before reconnecting.');
+
     const endpoint = process.env.OPENCLI_CDP_ENDPOINT;
     if (!endpoint) throw new Error('OPENCLI_CDP_ENDPOINT is not set');
 
