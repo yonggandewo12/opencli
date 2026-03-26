@@ -17,7 +17,7 @@ vi.mock('./output.js', () => ({
 
 import { registerCommandToProgram } from './commanderAdapter.js';
 
-describe('commanderAdapter bool normalization', () => {
+describe('commanderAdapter arg passing', () => {
   const cmd: CliCommand = {
     site: 'paperreview',
     name: 'submit',
@@ -39,54 +39,42 @@ describe('commanderAdapter bool normalization', () => {
     process.exitCode = undefined;
   });
 
-  it('normalizes explicit false string values to false', async () => {
+  it('passes bool flag values through to executeCommand for coercion', async () => {
     const program = new Command();
     const siteCmd = program.command('paperreview');
     registerCommandToProgram(siteCmd, cmd);
 
     await program.parseAsync(['node', 'opencli', 'paperreview', 'submit', './paper.pdf', '--dry-run', 'false']);
 
-    expect(mockExecuteCommand).toHaveBeenCalledWith(
-      cmd,
-      expect.objectContaining({
-        pdf: './paper.pdf',
-        'dry-run': false,
-        'prepare-only': false,
-      }),
-      false,
-    );
+    expect(mockExecuteCommand).toHaveBeenCalled();
+    const kwargs = mockExecuteCommand.mock.calls[0][1];
+    expect(kwargs.pdf).toBe('./paper.pdf');
+    expect(kwargs).toHaveProperty('dry-run');
   });
 
-  it('normalizes valueless bool flags to true', async () => {
+  it('passes valueless bool flags as true to executeCommand', async () => {
     const program = new Command();
     const siteCmd = program.command('paperreview');
     registerCommandToProgram(siteCmd, cmd);
 
     await program.parseAsync(['node', 'opencli', 'paperreview', 'submit', './paper.pdf', '--prepare-only']);
 
-    expect(mockExecuteCommand).toHaveBeenCalledWith(
-      cmd,
-      expect.objectContaining({
-        pdf: './paper.pdf',
-        'dry-run': false,
-        'prepare-only': true,
-      }),
-      false,
-    );
+    expect(mockExecuteCommand).toHaveBeenCalled();
+    const kwargs = mockExecuteCommand.mock.calls[0][1];
+    expect(kwargs.pdf).toBe('./paper.pdf');
+    expect(kwargs['prepare-only']).toBe(true);
   });
 
-  it('rejects invalid bool strings before execution', async () => {
+  it('passes raw invalid bool values through to executeCommand', async () => {
     const program = new Command();
     const siteCmd = program.command('paperreview');
     registerCommandToProgram(siteCmd, cmd);
-    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await program.parseAsync(['node', 'opencli', 'paperreview', 'submit', './paper.pdf', '--dry-run', 'maybe']);
 
-    expect(mockExecuteCommand).not.toHaveBeenCalled();
-    expect(process.exitCode).toBe(1);
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"dry-run" must be either "true" or "false".'));
-
-    stderr.mockRestore();
+    // Raw value is passed through; coerceAndValidateArgs in execution.ts handles validation
+    expect(mockExecuteCommand).toHaveBeenCalled();
+    const kwargs = mockExecuteCommand.mock.calls[0][1];
+    expect(kwargs.pdf).toBe('./paper.pdf');
   });
 });

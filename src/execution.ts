@@ -10,7 +10,7 @@
  * 6. Lifecycle hooks (onBeforeExecute / onAfterExecute)
  */
 
-import { type CliCommand, type InternalCliCommand, type Arg, Strategy, getRegistry, fullName } from './registry.js';
+import { type CliCommand, type InternalCliCommand, type Arg, type CommandArgs, Strategy, getRegistry, fullName } from './registry.js';
 import type { IPage } from './types.js';
 import { pathToFileURL } from 'node:url';
 import { executePipeline } from './pipeline/index.js';
@@ -20,7 +20,6 @@ import { getBrowserFactory, browserSession, runWithTimeout, DEFAULT_BROWSER_COMM
 import { emitHook, type HookContext } from './hooks.js';
 
 const _loadedModules = new Set<string>();
-type CommandArgs = Record<string, unknown>;
 
 export function coerceAndValidateArgs(cmdArgs: Arg[], kwargs: CommandArgs): CommandArgs {
   const result: CommandArgs = { ...kwargs };

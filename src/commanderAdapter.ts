@@ -18,18 +18,6 @@ import { render as renderOutput } from './output.js';
 import { executeCommand } from './execution.js';
 import { CliError, ERROR_ICONS, getErrorMessage } from './errors.js';
 
-export function normalizeArgValue(argType: string | undefined, value: unknown, name: string): unknown {
-  if (argType !== 'bool') return value;
-  if (typeof value === 'boolean') return value;
-  if (value == null || value === '') return false;
-
-  const normalized = String(value).trim().toLowerCase();
-  if (normalized === 'true') return true;
-  if (normalized === 'false') return false;
-
-  throw new CliError('ARGUMENT', `"${name}" must be either "true" or "false".`);
-}
-
 /**
  * Register a single CliCommand as a Commander subcommand.
  */
@@ -76,7 +64,7 @@ export function registerCommandToProgram(siteCmd: Command, cmd: CliCommand): voi
         if (arg.positional) continue;
         const camelName = arg.name.replace(/-([a-z])/g, (_m, ch: string) => ch.toUpperCase());
         const v = optionsRecord[arg.name] ?? optionsRecord[camelName];
-        if (v !== undefined) kwargs[arg.name] = normalizeArgValue(arg.type, v, arg.name);
+        if (v !== undefined) kwargs[arg.name] = v;
       }
 
       const verbose = optionsRecord.verbose === true;

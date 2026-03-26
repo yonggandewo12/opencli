@@ -48,7 +48,7 @@ export interface ManifestEntry {
   navigateBefore?: boolean | string;
 }
 
-import type { YamlCliDefinition } from './yaml-schema.js';
+import { type YamlCliDefinition, parseYamlArgs } from './yaml-schema.js';
 
 import { isRecord } from './utils.js';
 
@@ -175,20 +175,7 @@ function scanYaml(filePath: string, site: string): ManifestEntry | null {
     const strategy = strategyStr.toUpperCase();
     const browser = cliDef.browser ?? (strategy !== 'PUBLIC');
 
-    const args: ManifestEntry['args'] = [];
-    if (cliDef.args && typeof cliDef.args === 'object') {
-      for (const [argName, argDef] of Object.entries(cliDef.args)) {
-        args.push({
-          name: argName,
-          type: argDef?.type ?? 'str',
-          default: argDef?.default,
-          required: argDef?.required ?? false,
-          positional: argDef?.positional === true || undefined,
-          help: argDef?.description ?? argDef?.help ?? '',
-          choices: argDef?.choices,
-        });
-      }
-    }
+    const args = parseYamlArgs(cliDef.args);
 
     return {
       site: cliDef.site ?? site,
