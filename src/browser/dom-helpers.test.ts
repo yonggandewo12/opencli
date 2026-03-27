@@ -51,22 +51,50 @@ describe('waitForSelectorJs', () => {
     expect(typeof code).toBe('string');
     expect(code).toContain('#app');
     expect(code).toContain('querySelector');
+    expect(code).toContain('MutationObserver');
   });
 
-  it('rejects when document.querySelector returns null within timeout', async () => {
-    const g = globalThis as any;
-    g.document = { querySelector: (_: string) => null };
-    const code = waitForSelectorJs('#missing', 50);
-    await expect(eval(code) as Promise<string>).rejects.toThrow('Selector not found: #missing');
-    delete g.document;
-  });
-
-  it('resolves "found" when document.querySelector returns an element', async () => {
+  it('resolves "found" immediately when selector already present', async () => {
     const g = globalThis as any;
     const fakeEl = { tagName: 'DIV' };
     g.document = { querySelector: (_: string) => fakeEl };
     const code = waitForSelectorJs('[data-testid="primaryColumn"]', 1000);
     await expect(eval(code) as Promise<string>).resolves.toBe('found');
     delete g.document;
+  });
+
+  it('resolves "found" when selector appears after DOM mutation', async () => {
+    const g = globalThis as any;
+    let mutationCallback!: () => void;
+    g.MutationObserver = class {
+      constructor(cb: () => void) { mutationCallback = cb; }
+      observe() {}
+      disconnect() {}
+    };
+    let calls = 0;
+    g.document = {
+      querySelector: (_: string) => (calls++ > 0 ? { tagName: 'DIV' } : null),
+      body: {},
+    };
+    const code = waitForSelectorJs('#app', 1000);
+    const promise = eval(code) as Promise<string>;
+    mutationCallback(); // simulate DOM mutation
+    await expect(promise).resolves.toBe('found');
+    delete g.document;
+    delete g.MutationObserver;
+  });
+
+  it('rejects when selector never appears within timeout', async () => {
+    const g = globalThis as any;
+    g.MutationObserver = class {
+      constructor(_cb: () => void) {}
+      observe() {}
+      disconnect() {}
+    };
+    g.document = { querySelector: (_: string) => null, body: {} };
+    const code = waitForSelectorJs('#missing', 50);
+    await expect(eval(code) as Promise<string>).rejects.toThrow('Selector not found: #missing');
+    delete g.document;
+    delete g.MutationObserver;
   });
 });

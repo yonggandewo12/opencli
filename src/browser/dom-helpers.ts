@@ -201,18 +201,25 @@ export function waitForCaptureJs(maxMs: number): string {
 
 /**
  * Generate JS to wait until document.querySelector(selector) returns a match.
- * Polls every 100ms. Resolves 'found' on success; rejects after timeoutMs.
+ * Uses MutationObserver for near-instant resolution; falls back to reject after timeoutMs.
  */
 export function waitForSelectorJs(selector: string, timeoutMs: number): string {
   return `
     new Promise((resolve, reject) => {
-      const deadline = Date.now() + ${timeoutMs};
-      const check = () => {
-        if (document.querySelector(${JSON.stringify(selector)})) return resolve('found');
-        if (Date.now() > deadline) return reject(new Error('Selector not found: ' + ${JSON.stringify(selector)}));
-        setTimeout(check, 100);
-      };
-      check();
+      const sel = ${JSON.stringify(selector)};
+      if (document.querySelector(sel)) return resolve('found');
+      const cap = setTimeout(() => {
+        obs.disconnect();
+        reject(new Error('Selector not found: ' + sel));
+      }, ${timeoutMs});
+      const obs = new MutationObserver(() => {
+        if (document.querySelector(sel)) {
+          clearTimeout(cap);
+          obs.disconnect();
+          resolve('found');
+        }
+      });
+      obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
     })
   `;
 }
