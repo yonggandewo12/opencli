@@ -50,6 +50,7 @@ export default defineConfig({
               items: [
                 { text: 'Twitter / X', link: '/adapters/browser/twitter' },
                 { text: 'Reddit', link: '/adapters/browser/reddit' },
+                { text: 'Tieba', link: '/adapters/browser/tieba' },
                 { text: 'Bilibili', link: '/adapters/browser/bilibili' },
                 { text: 'Zhihu', link: '/adapters/browser/zhihu' },
                 { text: 'Xiaohongshu', link: '/adapters/browser/xiaohongshu' },
