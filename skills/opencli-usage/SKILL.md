@@ -60,8 +60,8 @@ Usage: `opencli <site> <command> [args] [--limit N] [-f json|yaml|md|csv|table]`
 | **bilibili** | `hot` `search` `me` `favorite` `history` `feed` `user-videos` `subtitle` `dynamic` `ranking` `following` |
 | **zhihu** | `hot` `search` `question` |
 | **xiaohongshu** | `search` `notifications` `feed` `user` `note` `comments` `download` `publish` `creator-notes` `creator-note-detail` `creator-notes-summary` `creator-profile` `creator-stats` |
-| **xueqiu** | `hot-stock` `stock` `watchlist` `feed` `hot` `search` `earnings-date` `fund-holdings` `fund-snapshot` |
-| **twitter** | `trending` `bookmarks` `search` `profile` `timeline` `thread` `article` `follow` `unfollow` `bookmark` `unbookmark` `post` `like` `reply` `delete` `block` `unblock` `followers` `following` `notifications` `hide-reply` `download` `accept` `reply-dm` |
+| **xueqiu** | `hot-stock` `stock` `watchlist` `feed` `hot` `search` `comments` `earnings-date` `fund-holdings` `fund-snapshot` |
+| **twitter** | `trending` `bookmarks` `search` `profile` `timeline` `thread` `article` `follow` `unfollow` `bookmark` `unbookmark` `post` `like` `likes` `reply` `delete` `block` `unblock` `followers` `following` `notifications` `hide-reply` `download` `accept` `reply-dm` |
 | **reddit** | `hot` `frontpage` `popular` `search` `subreddit` `read` `user` `user-posts` `user-comments` `upvote` `save` `comment` `subscribe` `saved` `upvoted` |
 | **youtube** | `search` `video` `transcript` |
 | **facebook** | `feed` `profile` `search` `friends` `groups` `events` `notifications` `memories` `add-friend` `join-group` |
@@ -75,7 +75,7 @@ Usage: `opencli <site> <command> [args] [--limit N] [-f json|yaml|md|csv|table]`
 | **douyin** | `profile` `videos` `user-videos` `activities` `collections` `hashtag` `location` `stats` `publish` `draft` `drafts` `delete` `update` |
 | **bluesky** | `search` `profile` `user` `feeds` `followers` `following` `thread` `trending` `starter-packs` |
 | **boss** | `search` `detail` `recommend` `joblist` `greet` `batchgreet` `send` `chatlist` `chatmsg` `invite` `mark` `exchange` `resume` `stats` |
-| **douban** | `search` `top250` `subject` `photos` `download` `marks` `reviews` |
+| **douban** | `search` `top250` `subject` `photos` `download` `marks` `reviews` `movie-hot` `book-hot` |
 | **pixiv** | `ranking` `search` `user` `illusts` `detail` `download` |
 | **jike** | `feed` `search` `create` `like` `comment` `repost` `notifications` `post` `topic` `user` |
 | **band** | `bands` `posts` `post` `mentions` |
@@ -85,6 +85,7 @@ Usage: `opencli <site> <command> [args] [--limit N] [-f json|yaml|md|csv|table]`
 | **barchart** | `quote` `options` `greeks` `flow` |
 | **sinafinance** | `news` |
 | **reuters** | `search` |
+| **amazon** | `bestsellers` `search` `product` `offer` `discussion` |
 | **coupang** | `search` `add-to-cart` |
 | **jd** | `item` |
 | **smzdm** | `search` |
@@ -98,7 +99,7 @@ Usage: `opencli <site> <command> [args] [--limit N] [-f json|yaml|md|csv|table]`
 | **web** | `read` — any URL to Markdown |
 | **weixin** | `download` — 公众号 article to Markdown |
 | **v2ex** (browser) | `daily` `me` `notifications` |
-| **linux-do** (browser) | `hot` `feed` `search` `categories` `category` `tags` `topic` `user-posts` `user-topics` |
+| **linux-do** (browser) | `hot` `latest` `feed` `search` `categories` `category` `tags` `topic` `user-posts` `user-topics` |
 | **bloomberg** (browser) | `news` — full article reader |
 | **grok** | `ask` |
 | **doubao** | `status` `new` `send` `read` `ask` `detail` `history` `meeting-summary` `meeting-transcript` |
@@ -138,7 +139,7 @@ Usage: `opencli <site> <command> [args] [--limit N] [-f json|yaml|md|csv|table]`
 | **stackoverflow** | `hot` `search` `bounties` `unanswered` |
 | **xiaoyuzhou** | `podcast` `podcast-episodes` `episode` |
 | **wikipedia** | `search` `summary` `random` `trending` |
-| **producthunt** | `today` `hot` `browse` `posts` `search` |
+| **producthunt** | `today` `hot` `browse` `posts` |
 | **imdb** | `top` `trending` `search` `title` `person` `reviews` |
 | **spotify** | `auth` `status` `play` |
 | **paperreview** | `submit` `review` `feedback` |

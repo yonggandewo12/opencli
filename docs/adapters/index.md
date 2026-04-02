@@ -6,7 +6,7 @@ Run `opencli list` for the live registry.
 
 | Site | Commands | Mode |
 |------|----------|------|
-| **[twitter](./browser/twitter)** | `trending` `bookmarks` `profile` `search` `timeline` `thread` `following` `followers` `notifications` `post` `reply` `delete` `like` `article` `follow` `unfollow` `bookmark` `unbookmark` `download` `accept` `reply-dm` `block` `unblock` `hide-reply` | 🔐 Browser |
+| **[twitter](./browser/twitter)** | `trending` `bookmarks` `profile` `search` `timeline` `thread` `following` `followers` `notifications` `post` `reply` `delete` `like` `likes` `article` `follow` `unfollow` `bookmark` `unbookmark` `download` `accept` `reply-dm` `block` `unblock` `hide-reply` | 🔐 Browser |
 | **[reddit](./browser/reddit)** | `hot` `frontpage` `popular` `search` `subreddit` `read` `user` `user-posts` `user-comments` `upvote` `save` `comment` `subscribe` `saved` `upvoted` | 🔐 Browser |
 | **[tieba](./browser/tieba)** | `hot` `posts` `search` `read` | 🔐 Browser |
 | **[bilibili](./browser/bilibili)** | `hot` `search` `me` `favorite` `history` `feed` `subtitle` `dynamic` `ranking` `following` `user-videos` `download` | 🔐 Browser |
