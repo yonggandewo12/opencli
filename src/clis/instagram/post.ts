@@ -4,9 +4,28 @@ import * as path from 'node:path';
 import { cli, Strategy } from '../../registry.js';
 import { ArgumentError, AuthRequiredError, CommandExecutionError } from '../../errors.js';
 import type { IPage } from '../../types.js';
+import {
+  installInstagramProtocolCapture,
+  readInstagramProtocolCapture,
+  type InstagramProtocolCaptureEntry,
+} from './_shared/protocol-capture.js';
+import {
+  publishImagesViaPrivateApi,
+  resolveInstagramPrivatePublishConfig,
+} from './_shared/private-publish.js';
+import { resolveInstagramRuntimeInfo } from './_shared/runtime-info.js';
 
 const INSTAGRAM_HOME_URL = 'https://www.instagram.com/';
 const SUPPORTED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+const MAX_IMAGES = 10;
+const INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH = '/tmp/instagram_post_protocol_trace.json';
+
+type InstagramProtocolDrain = () => Promise<void>;
+type InstagramSuccessRow = {
+  status: string;
+  detail: string;
+  url: string;
+};
 
 async function gotoInstagramHome(page: IPage, forceReload = false): Promise<void> {
   if (forceReload) {
@@ -92,21 +111,259 @@ function requirePage(page: IPage | null): IPage {
   return page;
 }
 
-function validateImagePath(input: string): string {
-  const resolved = path.resolve(String(input || '').trim());
-  if (!resolved) {
-    throw new ArgumentError('Argument "image" is required.', 'Provide --image /path/to/file.jpg');
+function validateImagePaths(inputs: string[]): string[] {
+  if (!inputs.length) {
+    throw new ArgumentError(
+      'Argument "image" or "images" is required.',
+      'Provide --image /path/to/file.jpg or --images /path/a.jpg,/path/b.jpg',
+    );
   }
-  if (!fs.existsSync(resolved)) {
-    throw new ArgumentError(`Image file not found: ${resolved}`);
-  }
-
-  const ext = path.extname(resolved).toLowerCase();
-  if (!SUPPORTED_EXTENSIONS.has(ext)) {
-    throw new ArgumentError(`Unsupported image format: ${ext}`, 'Supported formats: .jpg, .jpeg, .png, .webp');
+  if (inputs.length > MAX_IMAGES) {
+    throw new ArgumentError(`Too many images: ${inputs.length}`, `Instagram carousel posts support at most ${MAX_IMAGES} images`);
   }
 
-  return resolved;
+  return inputs.map((input) => {
+    const resolved = path.resolve(String(input || '').trim());
+    if (!resolved) {
+      throw new ArgumentError('Image path cannot be empty');
+    }
+    if (!fs.existsSync(resolved)) {
+      throw new ArgumentError(`Image file not found: ${resolved}`);
+    }
+
+    const ext = path.extname(resolved).toLowerCase();
+    if (!SUPPORTED_EXTENSIONS.has(ext)) {
+      throw new ArgumentError(`Unsupported image format: ${ext}`, 'Supported formats: .jpg, .jpeg, .png, .webp');
+    }
+
+    return resolved;
+  });
+}
+
+function normalizeImagePaths(kwargs: Record<string, unknown>): string[] {
+  const image = String(kwargs.image ?? '').trim();
+  const images = String(kwargs.images ?? '').trim();
+
+  if (image && images) {
+    throw new ArgumentError('Use either --image or --images, not both');
+  }
+
+  if (images) {
+    return validateImagePaths(images.split(',').map((part) => part.trim()).filter(Boolean));
+  }
+
+  if (image) {
+    return validateImagePaths([image]);
+  }
+
+  return validateImagePaths([]);
+}
+
+function validateInstagramPostArgs(kwargs: Record<string, unknown>): void {
+  const image = kwargs.image;
+  const images = kwargs.images;
+  if (image === undefined && images === undefined) {
+    throw new ArgumentError(
+      'Argument "image" or "images" is required.',
+      'Provide --image /path/to/file.jpg or --images /path/a.jpg,/path/b.jpg',
+    );
+  }
+}
+
+function isSafePrivateRouteFallbackError(error: unknown): boolean {
+  if (!(error instanceof CommandExecutionError)) return false;
+  return error.message.startsWith('Instagram private publish')
+    || error.message.startsWith('Instagram private route');
+}
+
+function buildInstagramSuccessResult(imagePaths: string[], url: string): InstagramSuccessRow[] {
+  return [{
+    status: '✅ Posted',
+    detail: describePostDetail(imagePaths),
+    url,
+  }];
+}
+
+function buildFallbackHint(privateError: unknown, uiError: unknown): string {
+  const privateMessage = privateError instanceof Error ? privateError.message : String(privateError);
+  const uiMessage = uiError instanceof Error ? uiError.message : String(uiError);
+  return `Private route failed first: ${privateMessage}. UI fallback then failed: ${uiMessage}`;
+}
+
+async function executePrivateInstagramPost(input: {
+  page: IPage;
+  imagePaths: string[];
+  content: string;
+  existingPostPaths: Set<string>;
+}): Promise<InstagramSuccessRow[]> {
+  const privateConfig = await resolveInstagramPrivatePublishConfig(input.page);
+  const privateResult = await publishImagesViaPrivateApi({
+    page: input.page,
+    imagePaths: input.imagePaths,
+    caption: input.content,
+    apiContext: privateConfig.apiContext,
+    jazoest: privateConfig.jazoest,
+  });
+  const url = privateResult.code
+    ? new URL(`/p/${privateResult.code}/`, INSTAGRAM_HOME_URL).toString()
+    : await resolveLatestPostUrl(input.page, input.existingPostPaths);
+  return buildInstagramSuccessResult(input.imagePaths, url);
+}
+
+async function executeUiInstagramPost(input: {
+  page: IPage;
+  imagePaths: string[];
+  content: string;
+  existingPostPaths: Set<string>;
+  commandAttemptBudget: number;
+  preUploadDelaySeconds: number;
+  uploadAttemptBudget: number;
+  previewProbeWindowSeconds: number;
+  finalPreviewWaitSeconds: number;
+  preShareDelaySeconds: number;
+  inlineUploadRetryBudget: number;
+  installProtocolCapture: () => Promise<void>;
+  drainProtocolCapture: InstagramProtocolDrain;
+  forceFreshStart?: boolean;
+}): Promise<InstagramSuccessRow[]> {
+  let lastError: unknown;
+  let lastSpecificCommandError: CommandExecutionError | null = null;
+  for (let attempt = 0; attempt < input.commandAttemptBudget; attempt++) {
+    let shareClicked = false;
+    try {
+      await gotoInstagramHome(input.page, input.forceFreshStart || attempt > 0);
+      await input.installProtocolCapture();
+      await input.page.wait({ time: 2 });
+      await dismissResidualDialogs(input.page);
+
+      await ensureComposerOpen(input.page);
+      const uploadSelectors = await resolveUploadSelectors(input.page);
+      if (input.preUploadDelaySeconds > 0) {
+        await input.page.wait({ time: input.preUploadDelaySeconds });
+      }
+      let uploaded = false;
+      let uploadFailure: CommandExecutionError | null = null;
+      for (const selector of uploadSelectors) {
+        let activeSelector = selector;
+        for (let uploadAttempt = 0; uploadAttempt < input.uploadAttemptBudget; uploadAttempt++) {
+          await uploadImage(input.page, input.imagePaths, activeSelector);
+          const uploadState = await waitForPreviewMaybe(input.page, input.previewProbeWindowSeconds);
+          if (uploadState.state === 'preview') {
+            uploaded = true;
+            break;
+          }
+          if (uploadState.state === 'failed') {
+            uploadFailure = makeUploadFailure(uploadState.detail);
+            for (let inlineRetry = 0; inlineRetry < input.inlineUploadRetryBudget; inlineRetry++) {
+              const clickedRetry = await clickVisibleUploadRetry(input.page);
+              if (!clickedRetry) break;
+              await input.page.wait({ time: 3 });
+              const retriedState = await waitForPreviewMaybe(input.page, Math.max(3, Math.floor(input.previewProbeWindowSeconds / 2)));
+              if (retriedState.state === 'preview') {
+                uploaded = true;
+                break;
+              }
+              if (retriedState.state !== 'failed') break;
+            }
+            if (uploaded) break;
+            await dismissUploadErrorDialog(input.page);
+            await dismissResidualDialogs(input.page);
+            if (uploadAttempt < input.uploadAttemptBudget - 1) {
+              try {
+                await input.drainProtocolCapture();
+                await gotoInstagramHome(input.page, true);
+                await input.installProtocolCapture();
+                await input.page.wait({ time: 2 });
+                await dismissResidualDialogs(input.page);
+                await ensureComposerOpen(input.page);
+                activeSelector = await resolveFreshUploadSelector(input.page, activeSelector);
+                if (input.preUploadDelaySeconds > 0) {
+                  await input.page.wait({ time: input.preUploadDelaySeconds });
+                }
+              } catch {
+                throw uploadFailure;
+              }
+              await input.page.wait({ time: 1.5 });
+              continue;
+            }
+            break;
+          }
+          break;
+        }
+        if (uploaded) break;
+      }
+      if (!uploaded) {
+        if (uploadFailure) throw uploadFailure;
+        await waitForPreview(input.page, input.finalPreviewWaitSeconds);
+      }
+      try {
+        await advanceToCaptionEditor(input.page);
+      } catch (error) {
+        await rethrowUploadFailureIfPresent(input.page, error);
+      }
+      if (input.content) {
+        await fillCaption(input.page, input.content);
+        await ensureCaptionFilled(input.page, input.content);
+      }
+      if (input.preShareDelaySeconds > 0) {
+        await input.page.wait({ time: input.preShareDelaySeconds });
+      }
+      await clickAction(input.page, ['Share', '分享'], 'caption');
+      shareClicked = true;
+      let url = '';
+      try {
+        url = await waitForPublishSuccess(input.page);
+      } catch (error) {
+        if (
+          error instanceof CommandExecutionError
+          && error.message === 'Instagram post share failed'
+          && await clickVisibleShareRetry(input.page)
+        ) {
+          await input.page.wait({ time: Math.max(2, input.preShareDelaySeconds) });
+          url = await waitForPublishSuccess(input.page);
+        } else {
+          throw error;
+        }
+      }
+      await input.drainProtocolCapture();
+      if (!url) {
+        url = await resolveLatestPostUrl(input.page, input.existingPostPaths);
+      }
+
+      return buildInstagramSuccessResult(input.imagePaths, url);
+    } catch (error) {
+      lastError = error;
+      if (error instanceof CommandExecutionError && error.message !== 'Failed to open Instagram post composer') {
+        lastSpecificCommandError = error;
+      }
+      if (error instanceof AuthRequiredError) throw error;
+      if (shareClicked) {
+        throw error;
+      }
+      if (!(error instanceof CommandExecutionError) || attempt === input.commandAttemptBudget - 1) {
+        if (error instanceof CommandExecutionError && error.message === 'Failed to open Instagram post composer' && lastSpecificCommandError) {
+          throw lastSpecificCommandError;
+        }
+        throw error;
+      }
+      let resetWindow = false;
+      if (input.imagePaths.length >= 10 && input.page.closeWindow) {
+        try {
+          await input.drainProtocolCapture();
+          await input.page.closeWindow();
+          resetWindow = true;
+        } catch {
+          // Best-effort: a fresh automation window is safer than reusing a polluted one.
+        }
+      }
+      if (!resetWindow) {
+        await dismissResidualDialogs(input.page);
+        await input.page.wait({ time: 1 });
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new CommandExecutionError('Instagram post failed');
 }
 
 async function ensureComposerOpen(page: IPage): Promise<void> {
@@ -247,8 +504,22 @@ async function resolveUploadSelectors(page: IPage): Promise<string[]> {
     }
 
     await ensureComposerOpen(page);
-    await page.wait({ time: 1 });
-    return findUploadSelectors(page);
+    await page.wait({ time: 1.5 });
+
+    try {
+      return await findUploadSelectors(page);
+    } catch (retryError) {
+      if (!(retryError instanceof CommandExecutionError) || !retryError.message.includes('upload input not found')) {
+        throw retryError;
+      }
+
+      await gotoInstagramHome(page, true);
+      await page.wait({ time: 2 });
+      await dismissResidualDialogs(page);
+      await ensureComposerOpen(page);
+      await page.wait({ time: 2 });
+      return findUploadSelectors(page);
+    }
   }
 }
 
@@ -266,14 +537,21 @@ async function resolveFreshUploadSelector(page: IPage, previousSelector: string)
   return selectors[0] || previousSelector;
 }
 
-async function injectImageViaBrowser(page: IPage, imagePath: string, selector: string): Promise<void> {
-  const ext = path.extname(imagePath).toLowerCase();
-  const mimeType = ext === '.png'
-    ? 'image/png'
-    : ext === '.webp'
-      ? 'image/webp'
-      : 'image/jpeg';
-  const base64 = fs.readFileSync(imagePath).toString('base64');
+async function injectImageViaBrowser(page: IPage, imagePaths: string[], selector: string): Promise<void> {
+  const images = imagePaths.map((imagePath) => {
+    const ext = path.extname(imagePath).toLowerCase();
+    const mimeType = ext === '.png'
+      ? 'image/png'
+      : ext === '.webp'
+        ? 'image/webp'
+        : 'image/jpeg';
+
+    return {
+      name: path.basename(imagePath),
+      type: mimeType,
+      base64: fs.readFileSync(imagePath).toString('base64'),
+    };
+  });
   const chunkKey = `__opencliInstagramUpload_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const chunkSize = 256 * 1024;
 
@@ -284,8 +562,9 @@ async function injectImageViaBrowser(page: IPage, imagePath: string, selector: s
     })()
   `);
 
-  for (let offset = 0; offset < base64.length; offset += chunkSize) {
-    const chunk = base64.slice(offset, offset + chunkSize);
+  const payload = JSON.stringify(images);
+  for (let offset = 0; offset < payload.length; offset += chunkSize) {
+    const chunk = payload.slice(offset, offset + chunkSize);
     await page.evaluate(`
       (() => {
         const key = ${JSON.stringify(chunkKey)};
@@ -302,11 +581,7 @@ async function injectImageViaBrowser(page: IPage, imagePath: string, selector: s
     (() => {
       const selector = ${JSON.stringify(selector)};
       const key = ${JSON.stringify(chunkKey)};
-      const payload = {
-        name: ${JSON.stringify(path.basename(imagePath))},
-        type: ${JSON.stringify(mimeType)},
-        base64: Array.isArray(window[key]) ? window[key].join('') : '',
-      };
+      const payload = JSON.parse(Array.isArray(window[key]) ? window[key].join('') : '[]');
 
       const cleanup = () => { try { delete window[key]; } catch {} };
       const input = document.querySelector(selector);
@@ -316,13 +591,15 @@ async function injectImageViaBrowser(page: IPage, imagePath: string, selector: s
       }
 
       try {
-        const binary = atob(payload.base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const blob = new Blob([bytes], { type: payload.type });
-        const file = new File([blob], payload.name, { type: payload.type });
         const dt = new DataTransfer();
-        dt.items.add(file);
+        for (const img of payload) {
+          const binary = atob(img.base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: img.type });
+          const file = new File([blob], img.name, { type: img.type });
+          dt.items.add(file);
+        }
         Object.defineProperty(input, 'files', { value: dt.files, configurable: true });
         input.dispatchEvent(new Event('change', { bubbles: true }));
         input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -357,8 +634,8 @@ type UploadStageState = {
   detail?: string;
 };
 
-async function inspectUploadStage(page: IPage): Promise<UploadStageState> {
-  const result = await page.evaluate(`
+export function buildInspectUploadStageJs(): string {
+  return `
     (() => {
       const isVisible = (el) => {
         if (!(el instanceof HTMLElement)) return false;
@@ -369,20 +646,22 @@ async function inspectUploadStage(page: IPage): Promise<UploadStageState> {
           && rect.width > 0
           && rect.height > 0;
       };
-      const hasVisibleButton = (labels) => {
-        return Array.from(document.querySelectorAll('button, div[role="button"]')).some((el) => {
-          const text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
-          return isVisible(el) && labels.includes(text);
-        });
-      };
-      const dialogText = Array.from(document.querySelectorAll('[role="dialog"]'))
-        .filter((el) => isVisible(el))
-        .map((el) => (el.textContent || '').replace(/\\s+/g, ' ').trim())
-        .join(' ');
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter((el) => isVisible(el));
+      const visibleTexts = dialogs.map((el) => (el.textContent || '').replace(/\\s+/g, ' ').trim());
+      const dialogText = visibleTexts.join(' ');
       const combined = dialogText.toLowerCase();
-      const hasCaption = !!document.querySelector('textarea, [contenteditable="true"]');
-      const hasPicker = hasVisibleButton(['Select from computer', '从电脑中选择']);
-      const hasNext = hasVisibleButton(['Next', '下一步']);
+      const hasVisibleButtonInDialogs = (labels) => {
+        return dialogs.some((dialog) =>
+          Array.from(dialog.querySelectorAll('button, div[role="button"]')).some((el) => {
+            const text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+            const aria = (el.getAttribute?.('aria-label') || '').replace(/\\s+/g, ' ').trim();
+            return isVisible(el) && (labels.includes(text) || labels.includes(aria));
+          })
+        );
+      };
+      const hasCaption = dialogs.some((dialog) => !!dialog.querySelector('textarea, [contenteditable="true"]'));
+      const hasPicker = hasVisibleButtonInDialogs(['Select from computer', '从电脑中选择']);
+      const hasNext = hasVisibleButtonInDialogs(['Next', '下一步']);
       const hasPreviewUi = hasCaption
         || (!hasPicker && hasNext)
         || /crop|select crop|select zoom|open media gallery|filters|adjustments|裁剪|缩放|滤镜|调整/.test(combined);
@@ -391,7 +670,11 @@ async function inspectUploadStage(page: IPage): Promise<UploadStageState> {
       if (failed) return { state: 'failed', detail: dialogText || 'Something went wrong' };
       return { state: 'pending', detail: dialogText || '' };
     })()
-  `) as UploadStageState & { ok?: boolean };
+  `;
+}
+
+async function inspectUploadStage(page: IPage): Promise<UploadStageState> {
+  const result = await page.evaluate(buildInspectUploadStageJs()) as UploadStageState & { ok?: boolean };
 
   if (result?.state) return result;
   if (result?.ok === true) return { state: 'preview', detail: result.detail };
@@ -405,7 +688,7 @@ function makeUploadFailure(detail?: string): CommandExecutionError {
   );
 }
 
-async function uploadImage(page: IPage, imagePath: string, selector: string): Promise<void> {
+async function uploadImage(page: IPage, imagePaths: string[], selector: string): Promise<void> {
   if (!page.setFileInput) {
     throw new CommandExecutionError(
       'Instagram posting requires Browser Bridge file upload support',
@@ -416,12 +699,14 @@ async function uploadImage(page: IPage, imagePath: string, selector: string): Pr
   let activeSelector = selector;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await page.setFileInput([imagePath], activeSelector);
+      await page.setFileInput(imagePaths, activeSelector);
       await dispatchUploadEvents(page, activeSelector);
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const staleSelector = message.includes('No element found matching selector');
+      const staleSelector = message.includes('No element found matching selector')
+        || message.includes('Could not find node with given id')
+        || message.includes('No node with given id found');
       if (staleSelector && attempt === 0) {
         activeSelector = await resolveFreshUploadSelector(page, activeSelector);
         continue;
@@ -429,10 +714,58 @@ async function uploadImage(page: IPage, imagePath: string, selector: string): Pr
       if (!message.includes('Unknown action') && !message.includes('set-file-input') && !message.includes('not supported')) {
         throw error;
       }
-      await injectImageViaBrowser(page, imagePath, activeSelector);
+      await injectImageViaBrowser(page, imagePaths, activeSelector);
       return;
     }
   }
+}
+
+function describePostDetail(imagePaths: string[]): string {
+  return imagePaths.length === 1
+    ? 'Single image post shared successfully'
+    : `${imagePaths.length}-image carousel post shared successfully`;
+}
+
+function getCommandAttemptBudget(imagePaths: string[]): number {
+  if (imagePaths.length >= 10) return 6;
+  if (imagePaths.length >= 5) return 4;
+  return 3;
+}
+
+function getPreUploadDelaySeconds(imagePaths: string[]): number {
+  if (imagePaths.length >= 10) return 3;
+  if (imagePaths.length >= 5) return 1.5;
+  return 0;
+}
+
+function getUploadAttemptBudget(imagePaths: string[]): number {
+  if (imagePaths.length >= 10) return 3;
+  if (imagePaths.length >= 5) return 3;
+  return 2;
+}
+
+function getPreviewProbeWindowSeconds(imagePaths: string[]): number {
+  if (imagePaths.length >= 10) return 6;
+  if (imagePaths.length >= 5) return 6;
+  return 4;
+}
+
+function getFinalPreviewWaitSeconds(imagePaths: string[]): number {
+  if (imagePaths.length >= 10) return 12;
+  if (imagePaths.length >= 5) return 16;
+  return 12;
+}
+
+function getPreShareDelaySeconds(imagePaths: string[]): number {
+  if (imagePaths.length >= 10) return 4;
+  if (imagePaths.length >= 5) return 3;
+  return 0;
+}
+
+function getInlineUploadRetryBudget(imagePaths: string[]): number {
+  if (imagePaths.length >= 10) return 3;
+  if (imagePaths.length >= 5) return 2;
+  return 1;
 }
 
 async function dismissUploadErrorDialog(page: IPage): Promise<boolean> {
@@ -464,15 +797,56 @@ async function dismissUploadErrorDialog(page: IPage): Promise<boolean> {
   return !!result?.ok;
 }
 
-async function waitForPreview(page: IPage): Promise<void> {
-  for (let attempt = 0; attempt < 12; attempt++) {
+async function clickVisibleUploadRetry(page: IPage): Promise<boolean> {
+  const result = await page.evaluate(`
+    (() => {
+      const isVisible = (el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && rect.width > 0
+          && rect.height > 0;
+      };
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter((el) => isVisible(el));
+      for (const dialog of dialogs) {
+        const text = (dialog.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        if (!text.includes('something went wrong') && !text.includes('try again') && !text.includes('失败') && !text.includes('出错')) continue;
+        const retry = Array.from(dialog.querySelectorAll('button, div[role="button"]')).find((el) => {
+          const label = ((el.textContent || '') + ' ' + (el.getAttribute?.('aria-label') || ''))
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          return isVisible(el) && (
+            label === 'try again'
+            || label === 'retry'
+            || label === '再试一次'
+            || label === '重试'
+          );
+        });
+        if (retry instanceof HTMLElement) {
+          retry.click();
+          return { ok: true };
+        }
+      }
+      return { ok: false };
+    })()
+  `) as { ok?: boolean };
+
+  return !!result?.ok;
+}
+
+async function waitForPreview(page: IPage, maxWaitSeconds = 12): Promise<void> {
+  const attempts = Math.max(1, Math.ceil(maxWaitSeconds));
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const state = await inspectUploadStage(page);
     if (state.state === 'preview') return;
     if (state.state === 'failed') {
       await page.screenshot({ path: '/tmp/instagram_post_preview_debug.png' });
       throw makeUploadFailure('Inspect /tmp/instagram_post_preview_debug.png. ' + (state.detail || ''));
     }
-    if (attempt < 11) await page.wait({ time: 1 });
+    if (attempt < attempts - 1) await page.wait({ time: 1 });
   }
 
   await page.screenshot({ path: '/tmp/instagram_post_preview_debug.png' });
@@ -492,8 +866,8 @@ async function waitForPreviewMaybe(page: IPage, maxWaitSeconds = 4): Promise<Upl
   return { state: 'pending' };
 }
 
-async function clickAction(page: IPage, labels: string[], scope: 'any' | 'media' | 'caption' = 'any'): Promise<string> {
-  const result = await page.evaluate(`
+export function buildClickActionJs(labels: string[], scope: 'any' | 'media' | 'caption' = 'any'): string {
+  return `
     ((labels, scope) => {
       const isVisible = (el) => {
         if (!(el instanceof HTMLElement)) return false;
@@ -529,31 +903,79 @@ async function clickAction(page: IPage, labels: string[], scope: 'any' | 'media'
         return true;
       };
 
-      const containers = [];
-      if (scope !== 'any') {
-        containers.push(...Array.from(document.querySelectorAll('[role="dialog"]')).filter(matchesScope));
-      }
-      containers.push(document.body);
+      const containers = scope !== 'any'
+        ? Array.from(document.querySelectorAll('[role="dialog"]')).filter(matchesScope)
+        : [document.body];
 
       for (const container of containers) {
         const nodes = Array.from(container.querySelectorAll('button, div[role="button"]'));
         for (const node of nodes) {
           const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
-          if (!text || !labels.includes(text)) continue;
+          const aria = (node.getAttribute?.('aria-label') || '').replace(/\\s+/g, ' ').trim();
+          if (!text && !aria) continue;
+          if (!labels.includes(text) && !labels.includes(aria)) continue;
           if (node instanceof HTMLElement && isVisible(node) && node.getAttribute('aria-disabled') !== 'true') {
             node.click();
-            return { ok: true, label: text };
+            return { ok: true, label: text || aria };
           }
         }
       }
       return { ok: false };
     })(${JSON.stringify(labels)}, ${JSON.stringify(scope)})
-  `) as { ok?: boolean; label?: string };
+  `;
+}
+
+async function clickAction(page: IPage, labels: string[], scope: 'any' | 'media' | 'caption' = 'any'): Promise<string> {
+  const result = await page.evaluate(buildClickActionJs(labels, scope)) as { ok?: boolean; label?: string };
 
   if (!result?.ok) {
     throw new CommandExecutionError(`Instagram action button not found: ${labels.join(' / ')}`);
   }
   return result.label || labels[0]!;
+}
+
+async function clickVisibleShareRetry(page: IPage): Promise<boolean> {
+  const result = await page.evaluate(`
+    (() => {
+      const isVisible = (el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && rect.width > 0
+          && rect.height > 0;
+      };
+
+      const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter((el) => isVisible(el));
+      for (const dialog of dialogs) {
+        const text = (dialog.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        if (!text.includes('post couldn') && !text.includes('could not be shared') && !text.includes('share failed')) continue;
+
+        const retry = Array.from(dialog.querySelectorAll('button, div[role="button"]')).find((el) => {
+          const label = ((el.textContent || '') + ' ' + (el.getAttribute?.('aria-label') || ''))
+            .replace(/\\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+          return isVisible(el) && (
+            label === 'try again'
+            || label === 'retry'
+            || label === '再试一次'
+            || label === '重试'
+          );
+        });
+
+        if (retry instanceof HTMLElement) {
+          retry.click();
+          return { ok: true };
+        }
+      }
+
+      return { ok: false };
+    })()
+  `) as { ok?: boolean };
+
+  return !!result?.ok;
 }
 
 async function hasCaptionEditor(page: IPage): Promise<boolean> {
@@ -600,12 +1022,23 @@ async function advanceToCaptionEditor(page: IPage): Promise<void> {
         if (await isCaptionStage(page)) {
           return;
         }
+        const uploadState = await inspectUploadStage(page);
+        if (uploadState.state === 'failed') {
+          throw makeUploadFailure(uploadState.detail);
+        }
+        if (attempt < 2) {
+          continue;
+        }
       }
       throw error;
     }
     await page.wait({ time: 1.5 });
     if (await hasCaptionEditor(page)) {
       return;
+    }
+    const uploadState = await inspectUploadStage(page);
+    if (uploadState.state === 'failed') {
+      throw makeUploadFailure(uploadState.detail);
     }
   }
 
@@ -624,6 +1057,14 @@ async function waitForCaptionEditor(page: IPage): Promise<void> {
       'Instagram may have changed the publish flow; inspect /tmp/instagram_post_caption_debug.png',
     );
   }
+}
+
+async function rethrowUploadFailureIfPresent(page: IPage, originalError: unknown): Promise<never> {
+  const uploadState = await inspectUploadStage(page);
+  if (uploadState.state === 'failed') {
+    throw makeUploadFailure(uploadState.detail);
+  }
+  throw originalError;
 }
 
 async function focusCaptionEditorForNativeInsert(page: IPage): Promise<boolean> {
@@ -941,15 +1382,17 @@ async function resolveCurrentUserId(page: IPage): Promise<string> {
 
 async function resolveProfileUrl(page: IPage, currentUserId = ''): Promise<string> {
   if (currentUserId) {
+    const runtimeInfo = await resolveInstagramRuntimeInfo(page);
     const apiResult = await page.evaluate(`
       (async () => {
         const userId = ${JSON.stringify(currentUserId)};
+        const appId = ${JSON.stringify(runtimeInfo.appId || '')};
         try {
           const res = await fetch(
             'https://www.instagram.com/api/v1/users/' + encodeURIComponent(userId) + '/info/',
             {
               credentials: 'include',
-              headers: { 'X-IG-App-ID': '936619743392459' },
+              headers: appId ? { 'X-IG-App-ID': appId } : {},
             },
           );
           if (!res.ok) return { ok: false };
@@ -1067,108 +1510,95 @@ async function resolveLatestPostUrl(page: IPage, existingPostPaths: ReadonlySet<
 cli({
   site: 'instagram',
   name: 'post',
-  description: 'Post a single-image Instagram feed post',
+  description: 'Post an Instagram feed image or image carousel',
   domain: 'www.instagram.com',
   strategy: Strategy.UI,
   browser: true,
-  timeoutSeconds: 180,
+  timeoutSeconds: 300,
   args: [
-    { name: 'image', required: true, help: 'Path to a single image file' },
+    { name: 'image', required: false, valueRequired: true, help: 'Path to a single image file' },
+    { name: 'images', required: false, valueRequired: true, help: `Comma-separated image paths (up to ${MAX_IMAGES})` },
     { name: 'content', positional: true, required: false, help: 'Caption text' },
   ],
   columns: ['status', 'detail', 'url'],
+  validateArgs: validateInstagramPostArgs,
   func: async (page: IPage | null, kwargs) => {
     const browserPage = requirePage(page);
-    const imagePath = validateImagePath(String(kwargs.image ?? ''));
+    const imagePaths = normalizeImagePaths(kwargs as Record<string, unknown>);
     const content = String(kwargs.content ?? '').trim();
     const existingPostPaths = await captureExistingProfilePostPaths(browserPage);
+    const commandAttemptBudget = getCommandAttemptBudget(imagePaths);
+    const preUploadDelaySeconds = getPreUploadDelaySeconds(imagePaths);
+    const uploadAttemptBudget = getUploadAttemptBudget(imagePaths);
+    const previewProbeWindowSeconds = getPreviewProbeWindowSeconds(imagePaths);
+    const finalPreviewWaitSeconds = getFinalPreviewWaitSeconds(imagePaths);
+    const preShareDelaySeconds = getPreShareDelaySeconds(imagePaths);
+    const inlineUploadRetryBudget = getInlineUploadRetryBudget(imagePaths);
+    const protocolCaptureEnabled = process.env.OPENCLI_INSTAGRAM_CAPTURE === '1';
+    const protocolCaptureData: InstagramProtocolCaptureEntry[] = [];
+    const protocolCaptureErrors: string[] = [];
 
-    let lastError: unknown;
-    let lastSpecificCommandError: CommandExecutionError | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      let shareClicked = false;
+    const installProtocolCapture = async (): Promise<void> => {
+      if (!protocolCaptureEnabled) return;
+      await installInstagramProtocolCapture(browserPage);
+    };
+
+    const drainProtocolCapture = async (): Promise<void> => {
+      if (!protocolCaptureEnabled) return;
+      const payload = await readInstagramProtocolCapture(browserPage);
+      if (payload.data.length) protocolCaptureData.push(...payload.data);
+      if (payload.errors.length) protocolCaptureErrors.push(...payload.errors);
+    };
+
+    try {
       try {
-        await gotoInstagramHome(browserPage, attempt > 0);
-        await browserPage.wait({ time: 2 });
-        await dismissResidualDialogs(browserPage);
-
-        await ensureComposerOpen(browserPage);
-        const uploadSelectors = await resolveUploadSelectors(browserPage);
-        let uploaded = false;
-        let uploadFailure: CommandExecutionError | null = null;
-        for (const selector of uploadSelectors) {
-          let activeSelector = selector;
-          for (let uploadAttempt = 0; uploadAttempt < 2; uploadAttempt++) {
-            await uploadImage(browserPage, imagePath, activeSelector);
-            const uploadState = await waitForPreviewMaybe(browserPage, 4);
-            if (uploadState.state === 'preview') {
-              uploaded = true;
-              break;
-            }
-            if (uploadState.state === 'failed') {
-              uploadFailure = makeUploadFailure(uploadState.detail);
-              await dismissUploadErrorDialog(browserPage);
-              await dismissResidualDialogs(browserPage);
-              if (uploadAttempt === 0) {
-                try {
-                  await gotoInstagramHome(browserPage, true);
-                  await browserPage.wait({ time: 2 });
-                  await dismissResidualDialogs(browserPage);
-                  await ensureComposerOpen(browserPage);
-                  activeSelector = await resolveFreshUploadSelector(browserPage, activeSelector);
-                } catch {
-                  throw uploadFailure;
-                }
-                await browserPage.wait({ time: 1.5 });
-                continue;
-              }
-              break;
-            }
-            break;
-          }
-          if (uploaded) break;
-        }
-        if (!uploaded) {
-          if (uploadFailure) throw uploadFailure;
-          await waitForPreview(browserPage);
-        }
-        await advanceToCaptionEditor(browserPage);
-        if (content) {
-          await fillCaption(browserPage, content);
-          await ensureCaptionFilled(browserPage, content);
-        }
-        await clickAction(browserPage, ['Share', '分享'], 'caption');
-        shareClicked = true;
-        let url = await waitForPublishSuccess(browserPage);
-        if (!url) {
-          url = await resolveLatestPostUrl(browserPage, existingPostPaths);
-        }
-
-        return [{
-          status: '✅ Posted',
-          detail: 'Single image post shared successfully',
-          url,
-        }];
+        return await executePrivateInstagramPost({
+          page: browserPage,
+          imagePaths,
+          content,
+          existingPostPaths,
+        });
       } catch (error) {
-        lastError = error;
-        if (error instanceof CommandExecutionError && error.message !== 'Failed to open Instagram post composer') {
-          lastSpecificCommandError = error;
-        }
-        if (error instanceof AuthRequiredError) throw error;
-        if (shareClicked) {
+        if (error instanceof AuthRequiredError || !isSafePrivateRouteFallbackError(error)) {
           throw error;
         }
-        if (!(error instanceof CommandExecutionError) || attempt === 2) {
-          if (error instanceof CommandExecutionError && error.message === 'Failed to open Instagram post composer' && lastSpecificCommandError) {
-            throw lastSpecificCommandError;
+        try {
+          return await executeUiInstagramPost({
+            page: browserPage,
+            imagePaths,
+            content,
+            existingPostPaths,
+            commandAttemptBudget,
+            preUploadDelaySeconds,
+            uploadAttemptBudget,
+            previewProbeWindowSeconds,
+            finalPreviewWaitSeconds,
+            preShareDelaySeconds,
+            inlineUploadRetryBudget,
+            installProtocolCapture,
+            drainProtocolCapture,
+            forceFreshStart: true,
+          });
+        } catch (uiError) {
+          if (uiError instanceof AuthRequiredError) throw uiError;
+          if (uiError instanceof CommandExecutionError) {
+            throw new CommandExecutionError(uiError.message, buildFallbackHint(error, uiError));
           }
-          throw error;
+          throw uiError;
         }
-        await dismissResidualDialogs(browserPage);
-        await browserPage.wait({ time: 1 });
+      }
+    } finally {
+      if (protocolCaptureEnabled) {
+        try {
+          await drainProtocolCapture();
+        } catch {
+          // Best-effort: capture export should not hide the main command result.
+        }
+        fs.writeFileSync(INSTAGRAM_PROTOCOL_TRACE_OUTPUT_PATH, JSON.stringify({
+          data: protocolCaptureData,
+          errors: protocolCaptureErrors,
+        }, null, 2));
       }
     }
-
-    throw lastError instanceof Error ? lastError : new CommandExecutionError('Instagram post failed');
   },
 });

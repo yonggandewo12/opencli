@@ -19,6 +19,7 @@ var WS_RECONNECT_MAX_DELAY = 5e3;
 * tabs (resolveTabId in background.ts filters them).
 */
 var attached = /* @__PURE__ */ new Set();
+var networkCaptures = /* @__PURE__ */ new Map();
 /** Internal blank page used when no user URL is provided. */
 var BLANK_PAGE$1 = "data:text/html,<html></html>";
 /** Check if a URL can be attached via CDP — only allow http(s) and our internal blank page. */
@@ -139,9 +140,59 @@ async function insertText(tabId, text) {
 	await ensureAttached(tabId);
 	await chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text });
 }
+function normalizeCapturePatterns(pattern) {
+	return String(pattern || "").split("|").map((part) => part.trim()).filter(Boolean);
+}
+function shouldCaptureUrl(url, patterns) {
+	if (!url) return false;
+	if (!patterns.length) return true;
+	return patterns.some((pattern) => url.includes(pattern));
+}
+function normalizeHeaders(headers) {
+	if (!headers || typeof headers !== "object") return {};
+	const out = {};
+	for (const [key, value] of Object.entries(headers)) out[String(key)] = String(value);
+	return out;
+}
+function getOrCreateNetworkCaptureEntry(tabId, requestId, fallback) {
+	const state = networkCaptures.get(tabId);
+	if (!state) return null;
+	const existingIndex = state.requestToIndex.get(requestId);
+	if (existingIndex !== void 0) return state.entries[existingIndex] || null;
+	const url = fallback?.url || "";
+	if (!shouldCaptureUrl(url, state.patterns)) return null;
+	const entry = {
+		kind: "cdp",
+		url,
+		method: fallback?.method || "GET",
+		requestHeaders: fallback?.requestHeaders || {},
+		timestamp: Date.now()
+	};
+	state.entries.push(entry);
+	state.requestToIndex.set(requestId, state.entries.length - 1);
+	return entry;
+}
+async function startNetworkCapture(tabId, pattern) {
+	await ensureAttached(tabId);
+	await chrome.debugger.sendCommand({ tabId }, "Network.enable");
+	networkCaptures.set(tabId, {
+		patterns: normalizeCapturePatterns(pattern),
+		entries: [],
+		requestToIndex: /* @__PURE__ */ new Map()
+	});
+}
+async function readNetworkCapture(tabId) {
+	const state = networkCaptures.get(tabId);
+	if (!state) return [];
+	const entries = state.entries.slice();
+	state.entries = [];
+	state.requestToIndex.clear();
+	return entries;
+}
 async function detach(tabId) {
 	if (!attached.has(tabId)) return;
 	attached.delete(tabId);
+	networkCaptures.delete(tabId);
 	try {
 		await chrome.debugger.detach({ tabId });
 	} catch {}
@@ -149,12 +200,63 @@ async function detach(tabId) {
 function registerListeners() {
 	chrome.tabs.onRemoved.addListener((tabId) => {
 		attached.delete(tabId);
+		networkCaptures.delete(tabId);
 	});
 	chrome.debugger.onDetach.addListener((source) => {
-		if (source.tabId) attached.delete(source.tabId);
+		if (source.tabId) {
+			attached.delete(source.tabId);
+			networkCaptures.delete(source.tabId);
+		}
 	});
 	chrome.tabs.onUpdated.addListener(async (tabId, info) => {
 		if (info.url && !isDebuggableUrl$1(info.url)) await detach(tabId);
+	});
+	chrome.debugger.onEvent.addListener(async (source, method, params) => {
+		const tabId = source.tabId;
+		if (!tabId) return;
+		const state = networkCaptures.get(tabId);
+		if (!state) return;
+		if (method === "Network.requestWillBeSent") {
+			const requestId = String(params?.requestId || "");
+			const request = params?.request;
+			const entry = getOrCreateNetworkCaptureEntry(tabId, requestId, {
+				url: request?.url,
+				method: request?.method,
+				requestHeaders: normalizeHeaders(request?.headers)
+			});
+			if (!entry) return;
+			entry.requestBodyKind = request?.hasPostData ? "string" : "empty";
+			entry.requestBodyPreview = String(request?.postData || "").slice(0, 4e3);
+			try {
+				const postData = await chrome.debugger.sendCommand({ tabId }, "Network.getRequestPostData", { requestId });
+				if (postData?.postData) {
+					entry.requestBodyKind = "string";
+					entry.requestBodyPreview = postData.postData.slice(0, 4e3);
+				}
+			} catch {}
+			return;
+		}
+		if (method === "Network.responseReceived") {
+			const requestId = String(params?.requestId || "");
+			const response = params?.response;
+			const entry = getOrCreateNetworkCaptureEntry(tabId, requestId, { url: response?.url });
+			if (!entry) return;
+			entry.responseStatus = response?.status;
+			entry.responseContentType = response?.mimeType || "";
+			entry.responseHeaders = normalizeHeaders(response?.headers);
+			return;
+		}
+		if (method === "Network.loadingFinished") {
+			const requestId = String(params?.requestId || "");
+			const stateEntryIndex = state.requestToIndex.get(requestId);
+			if (stateEntryIndex === void 0) return;
+			const entry = state.entries[stateEntryIndex];
+			if (!entry) return;
+			try {
+				const body = await chrome.debugger.sendCommand({ tabId }, "Network.getResponseBody", { requestId });
+				if (typeof body?.body === "string") entry.responsePreview = body.base64Encoded ? `base64:${body.body.slice(0, 4e3)}` : body.body.slice(0, 4e3);
+			} catch {}
+		}
 	});
 }
 //#endregion
@@ -354,6 +456,8 @@ async function handleCommand(cmd) {
 			case "set-file-input": return await handleSetFileInput(cmd, workspace);
 			case "insert-text": return await handleInsertText(cmd, workspace);
 			case "bind-current": return await handleBindCurrent(cmd, workspace);
+			case "network-capture-start": return await handleNetworkCaptureStart(cmd, workspace);
+			case "network-capture-read": return await handleNetworkCaptureRead(cmd, workspace);
 			default: return {
 				id: cmd.id,
 				ok: false,
@@ -834,6 +938,40 @@ async function handleInsertText(cmd, workspace) {
 			id: cmd.id,
 			ok: true,
 			data: { inserted: true }
+		};
+	} catch (err) {
+		return {
+			id: cmd.id,
+			ok: false,
+			error: err instanceof Error ? err.message : String(err)
+		};
+	}
+}
+async function handleNetworkCaptureStart(cmd, workspace) {
+	const tabId = await resolveTabId(cmd.tabId, workspace);
+	try {
+		await startNetworkCapture(tabId, cmd.pattern);
+		return {
+			id: cmd.id,
+			ok: true,
+			data: { started: true }
+		};
+	} catch (err) {
+		return {
+			id: cmd.id,
+			ok: false,
+			error: err instanceof Error ? err.message : String(err)
+		};
+	}
+}
+async function handleNetworkCaptureRead(cmd, workspace) {
+	const tabId = await resolveTabId(cmd.tabId, workspace);
+	try {
+		const data = await readNetworkCapture(tabId);
+		return {
+			id: cmd.id,
+			ok: true,
+			data
 		};
 	} catch (err) {
 		return {

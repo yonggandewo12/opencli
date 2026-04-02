@@ -5,7 +5,7 @@
  * Everything else is just JS code sent via 'exec'.
  */
 
-export type Action = 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions' | 'set-file-input' | 'insert-text' | 'bind-current';
+export type Action = 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions' | 'set-file-input' | 'insert-text' | 'bind-current' | 'network-capture-start' | 'network-capture-read';
 
 export interface Command {
   /** Unique request ID */
@@ -42,6 +42,8 @@ export interface Command {
   selector?: string;
   /** Raw text payload for insert-text action */
   text?: string;
+  /** URL substring filter pattern for network capture actions */
+  pattern?: string;
 }
 
 export interface Result {

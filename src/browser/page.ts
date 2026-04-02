@@ -127,6 +127,9 @@ export class Page implements IPage {
       await sendCommand('close-window', { ...this._wsOpt() });
     } catch {
       // Window may already be closed or daemon may be down
+    } finally {
+      this._tabId = undefined;
+      this._lastUrl = null;
     }
   }
 
@@ -352,6 +355,20 @@ export class Page implements IPage {
     const { generateReadInterceptedJs } = await import('../interceptor.js');
     // Same as installInterceptor: must go through evaluate() for IIFE wrapping
     const result = await this.evaluate(generateReadInterceptedJs('__opencli_xhr'));
+    return Array.isArray(result) ? result : [];
+  }
+
+  async startNetworkCapture(pattern: string = ''): Promise<void> {
+    await sendCommand('network-capture-start', {
+      pattern,
+      ...this._cmdOpts(),
+    });
+  }
+
+  async readNetworkCapture(): Promise<unknown[]> {
+    const result = await sendCommand('network-capture-read', {
+      ...this._cmdOpts(),
+    });
     return Array.isArray(result) ? result : [];
   }
 

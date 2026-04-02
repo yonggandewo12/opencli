@@ -19,7 +19,7 @@ function generateId(): string {
 
 export interface DaemonCommand {
   id: string;
-  action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions' | 'set-file-input' | 'insert-text' | 'bind-current';
+  action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions' | 'set-file-input' | 'insert-text' | 'bind-current' | 'network-capture-start' | 'network-capture-read';
   tabId?: number;
   code?: string;
   workspace?: string;
@@ -38,6 +38,8 @@ export interface DaemonCommand {
   selector?: string;
   /** Raw text payload for insert-text action */
   text?: string;
+  /** URL substring filter pattern for network capture */
+  pattern?: string;
 }
 
 export interface DaemonResult {

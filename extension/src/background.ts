@@ -267,6 +267,10 @@ async function handleCommand(cmd: Command): Promise<Result> {
         return await handleInsertText(cmd, workspace);
       case 'bind-current':
         return await handleBindCurrent(cmd, workspace);
+      case 'network-capture-start':
+        return await handleNetworkCaptureStart(cmd, workspace);
+      case 'network-capture-read':
+        return await handleNetworkCaptureRead(cmd, workspace);
       default:
         return { id: cmd.id, ok: false, error: `Unknown action: ${cmd.action}` };
     }
@@ -724,6 +728,26 @@ async function handleInsertText(cmd: Command, workspace: string): Promise<Result
   try {
     await executor.insertText(tabId, cmd.text);
     return { id: cmd.id, ok: true, data: { inserted: true } };
+  } catch (err) {
+    return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function handleNetworkCaptureStart(cmd: Command, workspace: string): Promise<Result> {
+  const tabId = await resolveTabId(cmd.tabId, workspace);
+  try {
+    await executor.startNetworkCapture(tabId, cmd.pattern);
+    return { id: cmd.id, ok: true, data: { started: true } };
+  } catch (err) {
+    return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function handleNetworkCaptureRead(cmd: Command, workspace: string): Promise<Result> {
+  const tabId = await resolveTabId(cmd.tabId, workspace);
+  try {
+    const data = await executor.readNetworkCapture(tabId);
+    return { id: cmd.id, ok: true, data };
   } catch (err) {
     return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
