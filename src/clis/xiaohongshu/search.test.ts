@@ -39,7 +39,9 @@ describe('xiaohongshu search', () => {
     expect(cmd?.func).toBeTypeOf('function');
 
     const page = createPageMock([
-      // First evaluate: early login-wall check (returns true)
+      // First evaluate: MutationObserver wait (resolved, login wall detected)
+      true,
+      // Second evaluate: login-wall check (returns true)
       true,
     ]);
 
@@ -61,9 +63,11 @@ describe('xiaohongshu search', () => {
       'https://www.xiaohongshu.com/user/profile/635a9c720000000018028b40?xsec_token=user-token&xsec_source=pc_search';
 
     const page = createPageMock([
-      // First evaluate: early login-wall check (returns false → no wall)
+      // First evaluate: MutationObserver wait (content appeared)
+      true,
+      // Second evaluate: login-wall check (returns false → no wall)
       false,
-      // Second evaluate: main DOM extraction
+      // Third evaluate: main DOM extraction
       {
         loginWall: false,
         results: [
@@ -101,9 +105,11 @@ describe('xiaohongshu search', () => {
     expect(cmd?.func).toBeTypeOf('function');
 
     const page = createPageMock([
-      // First evaluate: early login-wall check (returns false → no wall)
+      // First evaluate: MutationObserver wait (content appeared)
+      true,
+      // Second evaluate: login-wall check (returns false → no wall)
       false,
-      // Second evaluate: main DOM extraction
+      // Third evaluate: main DOM extraction
       {
         loginWall: false,
         results: [
@@ -139,34 +145,25 @@ describe('xiaohongshu search', () => {
     expect(result[0]).toMatchObject({ rank: 1, title: 'Result A' });
   });
 
-  it('retries once when the first pass returns empty results', async () => {
+  it('waits for content via MutationObserver before extracting', async () => {
     const cmd = getRegistry().get('xiaohongshu/search');
     expect(cmd?.func).toBeTypeOf('function');
 
     const page = createPageMock([
-      // First pass: login check + empty extraction
+      // First evaluate: MutationObserver wait (content appeared)
+      true,
+      // Second evaluate: login-wall check
       false,
+      // Third evaluate: extraction
       { loginWall: false, results: [] },
-      // Retry pass: login check + non-empty extraction
-      false,
-      {
-        loginWall: false,
-        results: [
-          {
-            title: 'Retry Result',
-            author: 'UserR',
-            likes: '9',
-            url: 'https://www.xiaohongshu.com/search_result/69b739f00000000000000000',
-            author_url: '',
-          },
-        ],
-      },
     ]);
 
-    const result = (await cmd!.func!(page, { query: '测试重试', limit: 5 })) as any[];
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ title: 'Retry Result' });
-    expect(page.goto).toHaveBeenCalledTimes(2);
+    const result = (await cmd!.func!(page, { query: '测试等待', limit: 5 })) as any[];
+    expect(result).toHaveLength(0);
+    // Only one navigation, no retry
+    expect(page.goto).toHaveBeenCalledTimes(1);
+    // Three evaluate calls: wait + login check + extraction
+    expect(page.evaluate).toHaveBeenCalledTimes(3);
   });
 });
 

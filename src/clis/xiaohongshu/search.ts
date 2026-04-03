@@ -9,6 +9,21 @@
 import { cli, Strategy } from '../../registry.js';
 import { AuthRequiredError } from '../../errors.js';
 
+/** Wait for search results or login wall using MutationObserver (max 5s). */
+const WAIT_FOR_CONTENT_JS = `
+  new Promise((resolve) => {
+    const check = () =>
+      document.querySelector('section.note-item') ||
+      /登录后查看搜索结果/.test(document.body?.innerText || '');
+    if (check()) return resolve(true);
+    const observer = new MutationObserver(() => {
+      if (check()) { observer.disconnect(); resolve(true); }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => { observer.disconnect(); resolve(false); }, 5000);
+  })
+`;
+
 /**
  * Extract approximate publish date from a Xiaohongshu note URL.
  * XHS note IDs follow MongoDB ObjectID format where the first 8 hex
@@ -39,30 +54,30 @@ cli({
   columns: ['rank', 'title', 'author', 'likes', 'published_at', 'url'],
   func: async (page, kwargs) => {
     const keyword = encodeURIComponent(kwargs.query);
-    const searchUrl =
-      `https://www.xiaohongshu.com/search_result?keyword=${keyword}&source=web_search_result_notes`;
+    await page.goto(
+      `https://www.xiaohongshu.com/search_result?keyword=${keyword}&source=web_search_result_notes`
+    );
 
-    const fetchAttempt = async () => {
-      await page.goto(searchUrl);
-      await page.wait(3);
+    // Wait for search results to render (or login wall to appear).
+    // Uses MutationObserver to resolve as soon as content appears,
+    // instead of a fixed delay + blind retry.
+    await page.evaluate(WAIT_FOR_CONTENT_JS);
 
-      // Early login-wall detection: XHS may show a login gate instead of
-      // results. Check *before* autoScroll to avoid crashing on a page
-      // that has no meaningful content to scroll through.
-      const loginCheck = await page.evaluate(`
+    // Login-wall detection
+    const loginCheck = await page.evaluate(`
       (() => /登录后查看搜索结果/.test(document.body?.innerText || ''))()
     `);
-      if (loginCheck) {
-        throw new AuthRequiredError(
-          'www.xiaohongshu.com',
-          'Xiaohongshu search results are blocked behind a login wall',
-        );
-      }
+    if (loginCheck) {
+      throw new AuthRequiredError(
+        'www.xiaohongshu.com',
+        'Xiaohongshu search results are blocked behind a login wall',
+      );
+    }
 
-      // Scroll a couple of times to load more results
-      await page.autoScroll({ times: 2 });
+    // Scroll a couple of times to load more results
+    await page.autoScroll({ times: 2 });
 
-      const payload = await page.evaluate(`
+    const payload = await page.evaluate(`
       (() => {
         const loginWall = /登录后查看搜索结果/.test(document.body.innerText || '');
 
@@ -116,30 +131,20 @@ cli({
       })()
     `);
 
-      if (!payload || typeof payload !== 'object') return [];
+    if (!payload || typeof payload !== 'object') return [];
 
-      if ((payload as any).loginWall) {
-        throw new AuthRequiredError('www.xiaohongshu.com', 'Xiaohongshu search results are blocked behind a login wall');
-      }
-
-      const data: any[] = Array.isArray((payload as any).results) ? (payload as any).results : [];
-      return data
-        .filter((item: any) => item.title)
-        .slice(0, kwargs.limit)
-        .map((item: any, i: number) => ({
-          rank: i + 1,
-          ...item,
-          published_at: noteIdToDate(item.url),
-        }));
-    };
-
-    let results = await fetchAttempt();
-    if (!results.length) {
-      // XHS search can intermittently render blank blocks in the first paint.
-      // Retry once with a fresh navigation before returning empty.
-      await page.wait(1);
-      results = await fetchAttempt();
+    if ((payload as any).loginWall) {
+      throw new AuthRequiredError('www.xiaohongshu.com', 'Xiaohongshu search results are blocked behind a login wall');
     }
-    return results;
+
+    const data: any[] = Array.isArray((payload as any).results) ? (payload as any).results : [];
+    return data
+      .filter((item: any) => item.title)
+      .slice(0, kwargs.limit)
+      .map((item: any, i: number) => ({
+        rank: i + 1,
+        ...item,
+        published_at: noteIdToDate(item.url),
+      }));
   },
 });
