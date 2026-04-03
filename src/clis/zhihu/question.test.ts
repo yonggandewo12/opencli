@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { getRegistry } from '../../registry.js';
-import { AuthRequiredError } from '../../errors.js';
+import { AuthRequiredError, CliError } from '../../errors.js';
 import './question.js';
 
 describe('zhihu question', () => {
@@ -88,22 +88,21 @@ describe('zhihu question', () => {
       cmd!.func!(page, { id: '2021881398772981878', limit: 3 }),
     ).rejects.toMatchObject({
       code: 'FETCH_ERROR',
-      message: 'Zhihu question answers request failed: Failed to fetch',
+      message: 'Zhihu question answers request failed Failed to fetch',
     });
   });
 
-  it('uses string-based evaluate compatible with the browser runtime', async () => {
+  it('rejects non-numeric question IDs', async () => {
     const cmd = getRegistry().get('zhihu/question');
     expect(cmd?.func).toBeTypeOf('function');
 
-    const page = {
-      goto: vi.fn().mockResolvedValue(undefined),
-      evaluate: vi.fn().mockResolvedValue({ ok: true, answers: [] }),
-    } as any;
+    const page = { goto: vi.fn(), evaluate: vi.fn() } as any;
 
-    await cmd!.func!(page, { id: '2021881398772981878', limit: 1 });
+    await expect(
+      cmd!.func!(page, { id: "abc'; alert(1); //", limit: 1 }),
+    ).rejects.toBeInstanceOf(CliError);
 
-    expect(page.evaluate).toHaveBeenCalledWith(expect.any(String));
-    expect(page.evaluate).not.toHaveBeenCalledWith(expect.any(Function), expect.anything());
+    expect(page.goto).not.toHaveBeenCalled();
+    expect(page.evaluate).not.toHaveBeenCalled();
   });
 });

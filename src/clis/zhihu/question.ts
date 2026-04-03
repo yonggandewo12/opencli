@@ -25,26 +25,15 @@ cli({
 
     await page.goto(`https://www.zhihu.com/question/${questionId}`);
 
-    // Only fetch answers here. The question detail endpoint is not used by the
-    // current CLI output and can fail independently, which would incorrectly
-    // turn a successful answers response into a login error.
-    const result = await (page as any).evaluate(`(async () => {
+    const url = `https://www.zhihu.com/api/v4/questions/${questionId}/answers?limit=${answerLimit}&offset=0&sort_by=default&include=data[*].content,voteup_count,comment_count,author`;
+    const result: any = await page.evaluate(`(async () => {
       try {
-        const aResp = await fetch(
-          'https://www.zhihu.com/api/v4/questions/${questionId}/answers?limit=${answerLimit}&offset=0&sort_by=default&include=data[*].content,voteup_count,comment_count,author',
-          { credentials: 'include' },
-        );
-        if (!aResp.ok) {
-          return { ok: false, status: aResp.status, error: aResp.statusText || '' };
-        }
-        const a = await aResp.json();
+        const r = await fetch(${JSON.stringify(url)}, { credentials: 'include' });
+        if (!r.ok) return { ok: false, status: r.status };
+        const a = await r.json();
         return { ok: true, answers: Array.isArray(a?.data) ? a.data : [] };
-      } catch (error) {
-        return {
-          ok: false,
-          status: 0,
-          error: error instanceof Error ? error.message : String(error),
-        };
+      } catch (e) {
+        return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
       }
     })()`);
 
@@ -52,11 +41,10 @@ cli({
       if (result?.status === 401 || result?.status === 403) {
         throw new AuthRequiredError('www.zhihu.com', 'Failed to fetch question data from Zhihu');
       }
+      const detail = result?.status > 0 ? `with HTTP ${result.status}` : (result?.error ?? '');
       throw new CliError(
         'FETCH_ERROR',
-        result?.status && result.status > 0
-          ? `Zhihu question answers request failed with HTTP ${result.status}${result?.error ? ` ${result.error}` : ''}`
-          : `Zhihu question answers request failed${result?.error ? `: ${result.error}` : ''}`,
+        `Zhihu question answers request failed ${detail}`.trim(),
         'Try again later or rerun with -v for more detail',
       );
     }
