@@ -21,11 +21,13 @@ describe('linux-do topic-content', () => {
       },
     }, 1234);
 
-    expect(result.content).toContain('# Hello Linux.do');
-    expect(result.content).toContain('- Author: neo');
+    expect(result.content).toContain('---');
+    expect(result.content).toContain('title: Hello Linux.do');
+    expect(result.content).toContain('author: neo');
+    expect(result.content).toContain('likes: 7');
+    expect(result.content).toContain('url: https://linux.do/t/1234');
     expect(result.content).toContain('## Heading');
     expect(result.content).toContain('- one');
-    expect(result.content).toContain('https://linux.do/t/1234');
   });
 
   it('falls back to cooked html and converts it to markdown', () => {
@@ -48,10 +50,10 @@ describe('linux-do topic-content', () => {
     expect(result.content).toContain('> quoted');
   });
 
-  it('registers topic-content with plain default output for markdown body rendering', () => {
+  it('registers topic-content with markdown default output for markdown body rendering', () => {
     const command = getRegistry().get('linux-do/topic-content');
 
-    expect(command?.defaultFormat).toBe('plain');
+    expect(command?.defaultFormat).toBe('markdown');
     expect(command?.columns).toEqual(['content']);
   });
 

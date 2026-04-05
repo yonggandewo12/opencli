@@ -2,6 +2,7 @@ import { AuthRequiredError, CommandExecutionError, EmptyResultError } from '@jac
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import type { IPage } from '@jackwener/opencli/types';
 import { htmlToMarkdown, isRecord } from '@jackwener/opencli/utils';
+import yaml from 'js-yaml';
 
 const LINUX_DO_DOMAIN = 'linux.do';
 const LINUX_DO_HOME = 'https://linux.do';
@@ -43,17 +44,17 @@ function normalizeTopicPayload(payload: unknown): LinuxDoTopicPayload | null {
   if (!isRecord(payload)) return null;
   const postStream = isRecord(payload.post_stream)
     ? {
-        posts: Array.isArray(payload.post_stream.posts)
-          ? payload.post_stream.posts.filter(isRecord).map((post) => ({
-              post_number: typeof post.post_number === 'number' ? post.post_number : undefined,
-              username: typeof post.username === 'string' ? post.username : undefined,
-              raw: typeof post.raw === 'string' ? post.raw : undefined,
-              cooked: typeof post.cooked === 'string' ? post.cooked : undefined,
-              like_count: typeof post.like_count === 'number' ? post.like_count : undefined,
-              created_at: typeof post.created_at === 'string' ? post.created_at : undefined,
-            }))
-          : undefined,
-      }
+      posts: Array.isArray(payload.post_stream.posts)
+        ? payload.post_stream.posts.filter(isRecord).map((post) => ({
+          post_number: typeof post.post_number === 'number' ? post.post_number : undefined,
+          username: typeof post.username === 'string' ? post.username : undefined,
+          raw: typeof post.raw === 'string' ? post.raw : undefined,
+          cooked: typeof post.cooked === 'string' ? post.cooked : undefined,
+          like_count: typeof post.like_count === 'number' ? post.like_count : undefined,
+          created_at: typeof post.created_at === 'string' ? post.created_at : undefined,
+        }))
+        : undefined,
+    }
     : undefined;
 
   return {
@@ -70,16 +71,19 @@ function buildTopicMarkdownDocument(params: {
   url: string;
   body: string;
 }): string {
-  const metadataLines = [
-    params.author ? `- Author: ${params.author}` : '',
-    typeof params.likes === 'number' && Number.isFinite(params.likes) ? `- Likes: ${params.likes}` : '',
-    params.createdAt ? `- Created: ${params.createdAt}` : '',
-    params.url ? `- URL: ${params.url}` : '',
-  ].filter(Boolean);
+  const frontMatter = yaml.dump({
+    title: params.title || undefined,
+    author: params.author || undefined,
+    likes: typeof params.likes === 'number' && Number.isFinite(params.likes) ? params.likes : undefined,
+    createdAt: params.createdAt || undefined,
+    url: params.url || undefined,
+  }, {
+    lineWidth: -1,
+    noRefs: true,
+  }).trim();
 
   return [
-    params.title ? `# ${params.title}` : '',
-    metadataLines.length > 0 ? metadataLines.join('\n') : '',
+    frontMatter ? `---\n${frontMatter}\n---` : '',
     params.body.trim(),
   ].filter(Boolean).join('\n\n').trim();
 }
