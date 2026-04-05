@@ -83,7 +83,7 @@ function buildTopicMarkdownDocument(params: {
       frontMatterLines.push(`${key}: ${value}`);
     } else {
       // Quote strings that could be misinterpreted by YAML parsers
-      const needsQuote = /[:#{}[\],&*?|>!%@`'"]/.test(value) || value.includes('\n');
+      const needsQuote = /[#{}[\],&*?|>!%@`'"]/.test(value) || /: /.test(value) || /:$/.test(value) || value.includes('\n');
       frontMatterLines.push(`${key}: ${needsQuote ? `'${value.replace(/'/g, "''")}'` : value}`);
     }
   }
