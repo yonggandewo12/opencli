@@ -31,14 +31,6 @@ function isExpectedGoogleRestriction(code: number, stderr: string): boolean {
   return /fetch failed/.test(stderr) || /Error \[FETCH_ERROR\]: HTTP (403|429|451|503)\b/.test(stderr);
 }
 
-function isExpectedBloombergRestriction(code: number, stderr: string): boolean {
-  if (code === 0) return false;
-  return /Bloomberg RSS HTTP \d+/.test(stderr)
-    || /Bloomberg RSS feed returned no items/.test(stderr)
-    || /fetch failed/.test(stderr)
-    || stderr.trim() === '';
-}
-
 // Keep old name as alias for existing tests
 const isExpectedXiaoyuzhouRestriction = isExpectedChineseSiteRestriction;
 
@@ -56,11 +48,7 @@ describe('public command restriction detectors', () => {
 describe('public commands E2E', () => {
   // ── bloomberg (RSS-backed, browser: false) ──
   it('bloomberg main returns structured headline data', async () => {
-    const { stdout, stderr, code } = await runCli(['bloomberg', 'main', '--limit', '1', '-f', 'json']);
-    if (isExpectedBloombergRestriction(code, stderr)) {
-      console.warn(`bloomberg main skipped: ${stderr.trim()}`);
-      return;
-    }
+    const { stdout, code } = await runCli(['bloomberg', 'main', '--limit', '1', '-f', 'json']);
     expect(code).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
@@ -78,14 +66,10 @@ describe('public commands E2E', () => {
     'industries',
     'tech',
     'politics',
-    // 'businessweek', // Bloomberg Businessweek RSS feed is intermittently unavailable
+    'businessweek',
     'opinions',
   ])('bloomberg %s returns structured RSS items', async (section) => {
-    const { stdout, stderr, code } = await runCli(['bloomberg', section, '--limit', '1', '-f', 'json']);
-    if (isExpectedBloombergRestriction(code, stderr)) {
-      console.warn(`bloomberg ${section} skipped: ${stderr.trim()}`);
-      return;
-    }
+    const { stdout, code } = await runCli(['bloomberg', section, '--limit', '1', '-f', 'json']);
     expect(code).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
