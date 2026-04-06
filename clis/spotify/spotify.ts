@@ -115,9 +115,11 @@ async function findTrackUri(query: string): Promise<{ uri: string; name: string;
 }
 
 function openBrowser(url: string): void {
-  const opener = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-  const args = process.platform === 'win32' ? ['', url] : [url];
-  execFileSync(opener, args, { stdio: 'ignore' });
+  if (process.platform === 'win32') {
+    execFileSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
+  } else {
+    execFileSync(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { stdio: 'ignore' });
+  }
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
