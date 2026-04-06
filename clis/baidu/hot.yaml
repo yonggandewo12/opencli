@@ -1,0 +1,89 @@
+site: baidu
+name: hot
+description: 百度热搜榜
+domain: top.baidu.com
+strategy: cookie
+browser: true
+
+args:
+  limit:
+    type: int
+    default: 10
+    description: 返回数量
+
+pipeline:
+  - navigate: https://top.baidu.com/boards?tab=realtime
+
+  - wait: 3
+
+  - evaluate: |
+      (() => {
+        const results = [];
+        const links = document.querySelectorAll('a[href*="wd="]');
+
+        links.forEach((link, idx) => {
+          const href = link.href || '';
+
+          // 查找标题元素 - 在热门内容区域内
+          const titleDivs = link.querySelectorAll('div');
+          let title = '';
+
+          for (const div of titleDivs) {
+            const text = div.textContent?.trim() || '';
+            // 排除纯数字、标签字符、空白
+            if (text.length > 3 && !/^(新|热|荐|\d+)$/.test(text) && !text.includes('热搜')) {
+              title = text;
+              break;
+            }
+          }
+
+          if (!title) {
+            title = link.textContent?.trim() || '';
+          }
+
+          // 清理标题
+          title = title.replace(/^\d+\s*/, '').replace(/\s*(新|热|荐)\s*$/g, '').trim();
+
+          // 去除重复的内容（比如 "标题 标题" 变成 "标题"）
+          const parts = title.split(/\s{2,}/);
+          if (parts.length > 1 && parts[0] === parts[1]) {
+            title = parts[0];
+          }
+
+          // 构造百度搜索 URL
+          let url = '';
+          try {
+            const urlObj = new URL(href);
+            const wd = urlObj.searchParams.get('wd');
+            if (wd) {
+              url = 'https://www.baidu.com/s?wd=' + encodeURIComponent(wd);
+            }
+          } catch (e) {
+            url = href;
+          }
+
+          if (title && title.length > 2 && !title.includes('热搜榜') && !title.includes('更多') && !title.includes('首页')) {
+            results.push({
+              title: title,
+              url: url
+            });
+          }
+        });
+
+        // 去重并重新排序
+        const seen = new Set();
+        const unique = results.filter(item => {
+          if (seen.has(item.title)) return false;
+          seen.add(item.title);
+          return true;
+        });
+
+        return unique.slice(0, 50).map((item, i) => ({
+          rank: i + 1,
+          ...item
+        }));
+      })()
+
+  - limit: ${{ args.limit }}
+
+columns: [rank, title, url]

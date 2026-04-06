@@ -133,6 +133,7 @@ git clone git@github.com:jackwener/opencli.git && cd opencli && npm install && n
 | **twitter** | `trending` `search` `timeline` `bookmarks` `post` `download` `profile` `article` `like` `likes` `notifications` `reply` `reply-dm` `thread` `follow` `unfollow` `followers` `following` `block` `unblock` `bookmark` `unbookmark` `delete` `hide-reply` `accept` |
 | **reddit** | `hot` `frontpage` `popular` `search` `subreddit` `read` `user` `user-posts` `user-comments` `upvote` `upvoted` `save` `saved` `comment` `subscribe` |
 | **amazon** | `bestsellers` `search` `product` `offer` `discussion` `movers-shakers` `new-releases` |
+| **baidu** | `search` `hot` |
 | **1688** | `search` `item` `assets` `download` `store` |
 | **gemini** | `new` `ask` `image` `deep-research` `deep-research-result` |
 | **yuanbao** | `new` `ask` |
@@ -141,7 +142,7 @@ git clone git@github.com:jackwener/opencli.git && cd opencli && npm install && n
 | **xianyu** | `search` `item` `chat` |
 | **xiaoe** | `courses` `detail` `catalog` `play-url` `content` |
 
-79+ adapters in total — **[→ see all supported sites & commands](./docs/adapters/index.md)**
+80+ adapters in total — **[→ see all supported sites & commands](./docs/adapters/index.md)**
 
 ## CLI Hub
 

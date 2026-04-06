@@ -10,6 +10,7 @@ Run `opencli list` for the live registry.
 | **[reddit](./browser/reddit)** | `hot` `frontpage` `popular` `search` `subreddit` `read` `user` `user-posts` `user-comments` `upvote` `save` `comment` `subscribe` `saved` `upvoted` | 🔐 Browser |
 | **[tieba](./browser/tieba)** | `hot` `posts` `search` `read` | 🔐 Browser |
 | **[hupu](./browser/hupu)** | `hot` `search` `detail` `mentions` `reply` `like` `unlike` | 🌐 / 🔐 |
+| **[baidu](./browser/baidu)** | `search` `hot` | 🔐 Browser |
 | **[bilibili](./browser/bilibili)** | `hot` `search` `me` `favorite` `history` `feed` `subtitle` `dynamic` `ranking` `following` `user-videos` `download` | 🔐 Browser |
 | **[zhihu](./browser/zhihu)** | `hot` `search` `question` `download` | 🔐 Browser |
 | **[xiaohongshu](./browser/xiaohongshu)** | `search` `notifications` `feed` `user` `note` `comments` `download` `publish` `creator-notes` `creator-note-detail` `creator-notes-summary` `creator-profile` `creator-stats` | 🔐 Browser |
